@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.streamlit/secrets.toml
+Input_files/*
+!Input_files/.gitkeep
+chart_exports/
+*_plotted_data.csv
+*.png
+*.zip
+*.log
