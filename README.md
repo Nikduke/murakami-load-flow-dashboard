@@ -22,15 +22,15 @@ The launcher changes to its own folder and uses `.venv`, so it can be started fr
 ## Add results
 
 - Place loose `.csv` files, `.zip` archives, or `Mapping.xlsx` / `Mapping_*.xlsx` under `Input_files/`. Subfolders are scanned recursively.
-- Or upload one or more CSV, ZIP, and mapping files in the sidebar. Browser uploads remain in the current session and are not written to disk.
+- Or upload one or more CSV, ZIP, and mapping files with the always-visible uploader at the top of the sidebar, below the MPE wordmark. Browser uploads remain in the current session and are not written to disk; remove them from the uploader when finished.
 - ZIP files are read in memory. The current safeguards allow up to 100 archive entries and 100 MiB uncompressed content.
-- When more than one mapping workbook is available, choose the intended workbook in the sidebar. Mapping files supply token headings only; case values are discovered from filenames.
+- A single mapping workbook is applied automatically. Choose a workbook only when several are available. Mapping files name the case filters; case values are discovered from filenames.
 
 The app reads source files locally and does not send project data to a service. `.gitignore` excludes input files, uploads, secrets and generated exports. Keep proprietary PowerFactory files outside the repository.
 
 ## Use the dashboard
 
-Global filename-token filters cascade from left to right and apply across five tabs: WTG P–Q, WTG terminal voltage, equipment loading, POC P–Q, and power factor. Each tab offers 1 plot, 1×2 or 2×2 layouts, bundle distribution options, Plotly controls and a plotted-data CSV download. See [the user guide](docs/USER_GUIDE.md) for details.
+Each filename-token filter starts with its first available value selected and cascades from left to right in the sidebar. Use **All cases** to select the full set; each token group also has **Select all** and **Clear all** actions. Every equipment chip is visible on its chart tab; click to select one or Ctrl-click to add/remove. Chart-specific settings follow the chips, with the compact layout selector last before the plots. The default **1 plot** view shows one panel; **1×2** and **2×2** are also available. See [the user guide](docs/USER_GUIDE.md) for details.
 
 ## Tests
 

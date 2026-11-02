@@ -56,8 +56,9 @@ def varying_token_positions(cases: list[CaseData] | tuple[CaseData, ...]) -> lis
 def case_labels(cases: list[CaseData] | tuple[CaseData, ...], positions: list[int]) -> dict[str, str]:
     labels: dict[str, str] = {}
     for case in cases:
-        parts = [case.tokens[position] for position in positions if position < len(case.tokens)]
-        labels[case.case_id] = " | ".join(parts) if parts else "Case"
+        label_positions = positions or list(range(len(case.tokens)))
+        parts = [case.tokens[position] for position in label_positions if position < len(case.tokens)]
+        labels[case.case_id] = " · ".join(parts) if parts else "Case"
     collisions: dict[str, list[CaseData]] = {}
     for case in cases:
         collisions.setdefault(labels[case.case_id].casefold(), []).append(case)

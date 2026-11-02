@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from hashlib import sha256 as real_sha256
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Sequence
@@ -9,7 +10,7 @@ from zipfile import ZipFile
 import pytest
 from openpyxl import Workbook
 
-from case_filters import case_labels, filter_cases, token_values
+from case_filters import case_labels, filter_cases, token_values, varying_token_positions
 from channel_catalogue import (
     discover_loading_objects,
     discover_poc_objects,
@@ -17,6 +18,7 @@ from channel_catalogue import (
     discover_wtg_objects,
     resolve_channel,
 )
+import data_loader
 from data_loader import InputFile, expand_inputs, parse_cases
 from mapping import load_mapping, token_heading
 from plotting import (
@@ -27,6 +29,7 @@ from plotting import (
     build_wtg_pq_figures,
     build_wtg_voltage_figures,
     distribute_bundles,
+    _legend_column_layout,
     plotted_data_csv,
 )
 
@@ -113,6 +116,29 @@ def _input(name: str = "Study__V0__Filter__Q0__C0__Extra.csv", content: bytes | 
     return InputFile(name, f"fixtures/{name}", content or _csv_bytes(name), origin="test")
 
 
+def _case_options_header(figure):
+    return next(
+        annotation.text
+        for annotation in figure.layout.annotations
+        if annotation.text.startswith("Case options")
+    )
+
+
+def test_input_digest_is_computed_once_per_immutable_source(monkeypatch):
+    calls = 0
+
+    def counted_sha256(content: bytes):
+        nonlocal calls
+        calls += 1
+        return real_sha256(content)
+
+    monkeypatch.setattr(data_loader, "sha256", counted_sha256)
+    source = InputFile("case.csv", "case.csv", b"source bytes")
+
+    assert source.digest == source.digest
+    assert calls == 1
+
+
 def _mapping_bytes(rows: list[tuple[object, object]]) -> bytes:
     workbook = Workbook()
     sheet = workbook.active
@@ -197,7 +223,9 @@ def test_cascading_token_options_and_sixth_position():
     assert token_values(cases, 5, [{"A"}, {"V1"}, {"F1"}, {"Q1"}, {"C1"}]) == ["X"]
     assert len(filter_cases(cases, [{"A"}, {"V1"}, {"F1"}, {"Q1"}, {"C1"}, {"X"}])) == 1
     assert cases[0].tokens[-1] == "X"
-    assert case_labels([cases[0]], []) == {cases[0].case_id: "Case"}
+    assert case_labels([cases[0]], []) == {
+        cases[0].case_id: "A · V1 · F1 · Q1 · C1 · X"
+    }
 
 
 def test_mapping_changes_headings_only_and_reports_invalid_rows():
@@ -277,7 +305,7 @@ def test_missing_and_conflicting_metrics_have_actionable_resolution_status():
 def test_plot_signs_and_capability_curves_are_numeric_and_grouped():
     case = parse_cases([_input()]).cases[0]
     labels = {case.case_id: "case-A"}
-    options = PlotOptions(layout="1×2", distribution="Auto")
+    options = PlotOptions(layout="1×2")
 
     pq = build_wtg_pq_figures([case], ["WTG 1\\WTG 1"], labels, options=options)
     assert pq.bundles[0].curves[0].x_values == (-2.0, -1.0, 0.0)
@@ -288,16 +316,71 @@ def test_plot_signs_and_capability_curves_are_numeric_and_grouped():
         "Qmax capability boundary",
     ]
     assert len(pq.figures) == 1
+    assert pq.figures[0].layout.title.text == "WTG P–Q · WTG 1"
+    case_traces = [trace for trace in pq.figures[0].data if trace.legendgroup == case.case_id]
+    assert [trace.showlegend for trace in case_traces] == [True, False, False]
+    assert {trace.name for trace in case_traces} == {"Selected case"}
+    assert [trace.name for trace in pq.figures[0].data if trace.showlegend] == ["Selected case"]
+    assert {trace.legendgroup for trace in pq.figures[0].data} == {case.case_id}
+    assert case_traces[0].line.color != "#555555"
+    assert [trace.line.color for trace in case_traces[1:]] == ["#555555", "#555555"]
+    assert [trace.line.width for trace in case_traces[1:]] == [1.4, 1.4]
+    assert [trace.line.dash for trace in case_traces] == ["dash", "dash", "dash"]
+    assert _case_options_header(pq.figures[0]).startswith("Case options: <b>")
+    assert "(" not in _case_options_header(pq.figures[0])
+    assert pq.figures[0].layout.legend.font.size == 12
+    assert pq.figures[0].layout.legend.orientation == "h"
+    assert pq.figures[0].layout.legend.entrywidthmode == "pixels"
+    assert pq.figures[0].layout.legend.xref == "paper"
+    assert pq.figures[0].layout.legend.x == 0
+    assert pq.figures[0].layout.legend.tracegroupgap == 0
+    assert pq.figures[0].layout.legend.y == pytest.approx(-78 / 352)
+    assert pq.figures[0].layout.margin.b == 110
+    assert "Case options: <b>%{meta[0]}</b>" in pq.figures[0].data[0].hovertemplate
+    assert "Boundary: %{meta[2]}" in pq.figures[0].data[1].hovertemplate
+    assert "Filename" not in pq.figures[0].data[0].hovertemplate
+
+    split_cases = parse_cases(
+        [_input("Study__V0__Filter__Q0__C0__Extra.csv"), _input("Study__V0__Filter__Q1__C0__Extra.csv")]
+    ).cases
+    split = build_wtg_pq_figures(
+        split_cases,
+        ["WTG 1\\WTG 1"],
+        {item.case_id: item.case_id for item in split_cases},
+        options=PlotOptions(layout="1×2"),
+    )
+    assert [figure.layout.title.text for figure in split.figures] == [
+        "WTG P–Q · WTG 1 · Panel 1 of 2",
+        "WTG P–Q · WTG 1 · Panel 2 of 2",
+    ]
 
     voltage = build_wtg_voltage_figures([case], ["WTG 1\\WTG 1"], labels, options=options)
     assert voltage.bundles[0].curves[0].x_values == (0.0, 1.0, 2.0)
     assert voltage.bundles[0].curves[0].y_values == (.97, .98, .99)
     assert len(voltage.figures[0].layout.shapes) == 2
+    voltage_reference_labels = [annotation.text for annotation in voltage.figures[0].layout.annotations]
+    assert "Min = 0.92 p.u." in voltage_reference_labels
+    assert "Max = 1.08 p.u." in voltage_reference_labels
+    assert all(
+        annotation.xshift == 48
+        for annotation in voltage.figures[0].layout.annotations
+        if annotation.text.startswith(("Min =", "Max ="))
+    )
 
     loading = build_equipment_loading_figures([case], ["Main TR_1"], "POC1", labels, options=options)
     assert loading.bundles[0].curves[0].x_values == (1.0, 2.0, 3.0)
     assert loading.bundles[0].curves[0].y_values == (30.0, 40.0, 50.0)
     assert loading.figures[0].layout.shapes[0].y0 == 100.0
+    assert loading.figures[0].layout.shapes[0].line.dash == "dash"
+    assert loading.figures[0].layout.shapes[0].line.color == "#c33b35"
+    peak_annotation = next(
+        annotation for annotation in loading.figures[0].layout.annotations if "3.0 MW" in annotation.text
+    )
+    assert "50.0 %" in peak_annotation.text
+    limited = build_equipment_loading_figures(
+        [case], ["Main TR_1"], "POC1", labels, options=options, loading_reference=75.0
+    )
+    assert limited.figures[0].layout.shapes[0].y0 == 75.0
 
     poc = build_poc_pq_figures([case], ["POC1", "POC2"], labels, options=options)
     by_object = {bundle.element_name: bundle.curves[0] for bundle in poc.bundles}
@@ -311,16 +394,78 @@ def test_plot_signs_and_capability_curves_are_numeric_and_grouped():
     assert pf_values["Exp_Cable_2"] == (-.9, -.8, -.7)
 
 
+def test_plot_legend_and_hover_use_compact_case_options():
+    cases = parse_cases(
+        [
+            _input("No_Qlim_HTRT__00 Vini 1pu__Filter_Out__Qmax__Cmax.csv"),
+            _input("No_Qlim_noHTRT__01 Vini 0.95pu__Filter_Out__Q0__Cnom.csv"),
+        ]
+    ).cases
+    labels = case_labels(cases, varying_token_positions(cases))
+    result = build_wtg_pq_figures(cases, ["WTG 1\\WTG 1"], labels, options=PlotOptions())
+    case_ids = {case.case_id for case in cases}
+    legend_traces = [
+        trace for trace in result.figures[0].data if trace.showlegend and trace.legendgroup in case_ids
+    ]
+
+    assert [trace.name for trace in legend_traces] == [
+        "HTRT · Vini 1pu · Qmax · Cmax",
+        "noHTRT · Vini 0.95pu · Q0 · Cnom",
+    ]
+    assert [trace.meta[0] for trace in legend_traces] == [labels[case.case_id] for case in cases]
+    assert result.figures[0].layout.margin.b == 110
+    case_line_styles = {
+        case_id: {trace.line.dash for trace in result.figures[0].data if trace.legendgroup == case_id}
+        for case_id in case_ids
+    }
+    assert all(len(styles) == 1 for styles in case_line_styles.values())
+    assert len({next(iter(styles)) for styles in case_line_styles.values()}) == len(case_ids)
+    assert [trace.name for trace in result.figures[0].data if trace.showlegend] == [
+        trace.name for trace in legend_traces
+    ]
+    assert _case_options_header(result.figures[0]) == "Case options: <b>Filter_Out</b>"
+    assert all("Filename" not in trace.hovertemplate for trace in result.figures[0].data)
+
+    single = build_wtg_pq_figures(
+        [cases[0]], ["WTG 1\\WTG 1"], labels, options=PlotOptions()
+    )
+    single_trace = next(trace for trace in single.figures[0].data if trace.showlegend)
+    assert single_trace.name == "Selected case"
+    assert single_trace.meta[0] == labels[cases[0].case_id]
+    assert _case_options_header(single.figures[0]).startswith("Case options: <b>")
+
+
 def test_distribution_preserves_every_element_case_bundle_without_duplicates():
     cases = parse_cases([_input(f"Study__V0__Filter__Q{n}__C0__Extra.csv") for n in range(8)]).cases
     label_map = {case.case_id: f"case-{index}" for index, case in enumerate(cases)}
     built = build_wtg_pq_figures(cases, ["WTG 1\\WTG 1"], label_map, options=PlotOptions())
-    panels = distribute_bundles(built.bundles, 4, "By case")
+    panels = distribute_bundles(built.bundles, 4)
     assert [len(panel) for panel in panels] == [2, 2, 2, 2]
     expected = [(bundle.element_name, bundle.case.case_id) for bundle in built.bundles]
     actual = [(bundle.element_name, bundle.case.case_id) for panel in panels for bundle in panel]
     assert sorted(actual) == sorted(expected)
     assert len(actual) == len(set(actual))
+
+
+def test_plot_trace_metadata_is_stored_once_and_dense_panels_use_webgl(monkeypatch):
+    case = parse_cases([_input()]).cases[0]
+    result = build_wtg_pq_figures([case], ["WTG 1\\WTG 1"], {case.case_id: "case-A"}, options=PlotOptions())
+    trace = result.figures[0].data[0]
+    assert trace.type == "scatter"
+    assert trace.mode == "lines"
+    assert trace.customdata is None
+    assert trace.meta == ("case-A", "WTG 1\\WTG 1", "")
+    assert "Case options: <b>%{meta[0]}</b>" in trace.hovertemplate
+    assert "WTG 1\\WTG 1" not in trace.hovertemplate
+    assert "Filename" not in trace.hovertemplate
+    assert "Source" not in trace.hovertemplate
+    assert "Transform" not in trace.hovertemplate
+    assert "Case ID:" not in trace.hovertemplate
+    assert "All filename tokens:" not in trace.hovertemplate
+
+    monkeypatch.setattr("plotting.WEBGL_POINT_THRESHOLD", 0)
+    dense = build_wtg_pq_figures([case], ["WTG 1\\WTG 1"], {case.case_id: "case-A"}, options=PlotOptions())
+    assert dense.figures[0].data[0].type == "scattergl"
 
 
 def test_synthetic_fourth_wtg_is_discovered_and_three_wtgs_split_across_panels():
@@ -337,6 +482,31 @@ def test_synthetic_fourth_wtg_is_discovered_and_three_wtgs_split_across_panels()
     assert len(assigned) == len(set(assigned))
 
 
+def test_automatic_distribution_stays_balanced_when_panels_outnumber_elements():
+    object_names = ("WTG 1\\WTG 1", "WTG 23\\WTG 23", "WTG 45\\WTG 45")
+    cases = parse_cases(
+        [
+            _input(
+                name,
+                _csv_bytes(name, extra_wtgs=object_names[1:]),
+            )
+            for name in (
+                f"Study__V0__Filter__Q{number}__C0__Extra.csv" for number in range(8)
+            )
+        ]
+    ).cases
+    labels = {case.case_id: case.case_id for case in cases}
+    result = build_wtg_pq_figures(cases, object_names, labels, options=PlotOptions())
+
+    panels = distribute_bundles(result.bundles, 4)
+
+    assert [len(panel) for panel in panels] == [6, 6, 6, 6]
+    actual = [(bundle.element_name, bundle.case.case_id) for panel in panels for bundle in panel]
+    expected = [(bundle.element_name, bundle.case.case_id) for bundle in result.bundles]
+    assert sorted(actual) == sorted(expected)
+    assert len(actual) == len(set(actual))
+
+
 def test_all_five_plot_builders_support_all_layouts_without_lost_bundles():
     cases = parse_cases([_input(f"Study__V0__Filter__Q{number}__C0__Extra.csv") for number in range(4)]).cases
     labels = {case.case_id: f"case-{index}" for index, case in enumerate(cases)}
@@ -349,13 +519,76 @@ def test_all_five_plot_builders_support_all_layouts_without_lost_bundles():
     )
     for builder in builders:
         for layout, expected_panels in (("1 plot", 1), ("1×2", 2), ("2×2", 4)):
-            result = builder(PlotOptions(layout=layout, distribution="Auto"))
+            result = builder(PlotOptions(layout=layout))
             expected = [(bundle.element_name, bundle.case.case_id) for bundle in result.bundles]
             actual = [(bundle.element_name, bundle.case.case_id) for panel in result.panels for bundle in panel]
             assert len(result.figures) == expected_panels
             assert all(panel for panel in result.panels)
             assert sorted(actual) == sorted(expected)
             assert len(actual) == len(set(actual))
+            assert all(_case_options_header(figure).startswith("Case options") for figure in result.figures)
+            assert all(
+                "Filename" not in trace.hovertemplate and "Source" not in trace.hovertemplate
+                for figure in result.figures
+                for trace in figure.data
+            )
+
+    multi_case_legend = build_wtg_pq_figures(
+        cases, ["WTG 1\\WTG 1"], labels, options=PlotOptions()
+    ).figures[0]
+    assert multi_case_legend.layout.legend.orientation == "h"
+    assert {trace.legend for trace in multi_case_legend.data if trace.showlegend} == {None}
+    assert multi_case_legend.layout.legend.entrywidthmode == "pixels"
+    assert multi_case_legend.layout.legend.entrywidth == pytest.approx((1066 - 110) / 4 - 45)
+    assert multi_case_legend.layout.margin.b == 110
+    assert multi_case_legend.layout.height == 700
+
+
+def test_case_legend_column_count_uses_longest_label_and_panel_width():
+    assert _legend_column_layout("Vini 0.95pu", 72, 1)[0] == 4
+    assert _legend_column_layout("Vini 0.95pu", 72, 4)[0] == 2
+    assert _legend_column_layout("Vini 0.95pu", 72, 4)[1] < _legend_column_layout("Vini 0.95pu", 72, 1)[1]
+    assert _legend_column_layout("Vini 0.95pu", 72, 1)[1] == pytest.approx((1066 - 110) / 4 - 45)
+    assert _legend_column_layout("Vini 0.95pu", 72, 4)[1] == pytest.approx((520 - 110) / 2 - 45)
+    long_label = "A very long case label with several tokens"
+    assert _legend_column_layout(long_label, 72, 1)[0] == 3
+    assert _legend_column_layout(long_label, 72, 4)[0] == 1
+    assert _legend_column_layout(long_label, 72, 1, panel_width=1800)[0] == 4
+    assert _legend_column_layout(long_label, 72, 4, panel_width=750)[0] == 2
+    assert _legend_column_layout(long_label, 72, 4, panel_width=620)[0] == 1
+
+
+def test_real_case_labels_use_four_columns_full_width_and_two_in_2x2(murakami_cases):
+    cases = [
+        case
+        for case in murakami_cases.cases
+        if case.tokens[0] == "No_Qlim_HTRT" and case.tokens[2] == "Filter_Out"
+    ]
+    assert len(cases) == 36
+    labels = case_labels(cases, varying_token_positions(cases))
+    builders = (
+        lambda options: build_wtg_pq_figures(cases, ["WTG 1\\WTG 1"], labels, options=options),
+        lambda options: build_wtg_voltage_figures(cases, ["WTG 1\\WTG 1"], labels, options=options),
+        lambda options: build_equipment_loading_figures(
+            cases, ["Main TR_1"], "POC1", labels, options=options
+        ),
+        lambda options: build_poc_pq_figures(cases, ["POC1"], labels, options=options),
+        lambda options: build_power_factor_figures(cases, ["Exp_Cable_1"], labels, options=options),
+    )
+    for builder in builders:
+        for layout, panel_count, expected_columns, panel_width in (
+            ("1 plot", 1, 4, 1800),
+            ("2×2", 4, 2, 750),
+        ):
+            result = builder(PlotOptions(layout=layout, panel_width=panel_width))
+            assert len(result.figures) == panel_count
+            for figure in result.figures:
+                panel_names = [trace.name for trace in figure.data if trace.showlegend]
+                columns, entry_width = _legend_column_layout(
+                    max(panel_names, key=len), len(panel_names), panel_count, panel_width
+                )
+                assert columns == expected_columns
+                assert figure.layout.legend.entrywidth == pytest.approx(entry_width)
 
 
 def test_plotted_csv_includes_axis_provenance_and_sign_transforms():
@@ -422,6 +655,40 @@ def test_real_murakami_objects_columns_and_curve_values(murakami_cases):
 
     voltage = build_wtg_voltage_figures([case], [wtg], labels, options=options)
     assert voltage.bundles[0].curves[0].y_values[1] == pytest.approx(.976772)
+
+    all_case_labels = case_labels(cases, varying_token_positions(cases))
+    one_plot = build_wtg_pq_figures(cases, [wtg], all_case_labels, options=PlotOptions())
+    assert {
+        trace.legend for trace in one_plot.figures[0].data if trace.showlegend
+    } == {None}
+    split = build_wtg_pq_figures(
+        cases, [wtg], all_case_labels, options=PlotOptions(layout="2×2")
+    )
+    assert all(
+        {trace.legend for trace in figure.data if trace.showlegend} == {None}
+        for figure in split.figures
+    )
+
+    twelve_cases = [
+        item for item in cases
+        if item.tokens[0] == "No_Qlim_HTRT"
+        and item.tokens[2] == "Filter_Out"
+        and item.tokens[4] == "Cmax"
+    ]
+    compact_split = build_wtg_pq_figures(
+        twelve_cases,
+        [wtg],
+        case_labels(twelve_cases, varying_token_positions(twelve_cases)),
+        options=PlotOptions(layout="2×2"),
+    )
+    assert len(twelve_cases) == 12
+    assert all(figure.layout.margin.b == 122 for figure in compact_split.figures)
+    assert all(figure.layout.height == 462 for figure in compact_split.figures)
+    assert all(figure.layout.xaxis.title.standoff == 6 for figure in compact_split.figures)
+    assert all(figure.layout.legend.y == pytest.approx(-78 / 282) for figure in compact_split.figures)
+    assert all(figure.layout.legend.yref == "paper" for figure in compact_split.figures)
+    assert all(figure.layout.annotations[0].y == pytest.approx(-46 / 282) for figure in compact_split.figures)
+    assert all(figure.layout.annotations[0].yref == "paper" for figure in compact_split.figures)
 
     assert _find(case, "Main TR_1", "Maximum Loading in %").column_position == 65
     assert _find(case, "Exp_Cable_1", "Loading in %").column_position == 1

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from html import escape
 from io import StringIO
 import math
+import re
 from typing import Iterable, Sequence
 
 import plotly.graph_objects as go
@@ -14,6 +16,11 @@ from case_filters import case_sort_key, natural_key, stable_case_colour
 from channel_catalogue import resolve_channel
 from data_loader import CaseData, Channel
 from validation import ValidationIssue
+
+
+WEBGL_POINT_THRESHOLD = 20_000
+CASE_LINE_STYLES = ("dash", "dot", "dashdot", "longdash", "longdashdot", "solid")
+LEGEND_COLUMN_MAX = 4
 
 
 @dataclass(frozen=True)
@@ -35,7 +42,6 @@ class Curve:
     raw_x_values: tuple[float | None, ...]
     raw_y_values: tuple[float | None, ...]
     dash: str = "solid"
-    line_colour: str = ""
     width: float = 2.0
 
 
@@ -52,19 +58,12 @@ class PlotSet:
     panels: tuple[tuple[CurveBundle, ...], ...]
     bundles: tuple[CurveBundle, ...]
     issues: tuple[ValidationIssue, ...]
-    distribution_used: str
-    x_range: tuple[float, float] | None
-    y_range: tuple[float, float] | None
 
 
 @dataclass(frozen=True)
 class PlotOptions:
     layout: str = "1 plot"
-    distribution: str = "Auto"
-    independent_ranges: bool = False
-    x_range: tuple[float, float] | None = None
-    y_range: tuple[float, float] | None = None
-    height: int | None = None
+    panel_width: int | None = None
 
 
 def _transform(values: Sequence[float | None], factor: float) -> tuple[float | None, ...]:
@@ -73,6 +72,86 @@ def _transform(values: Sequence[float | None], factor: float) -> tuple[float | N
 
 def _case_label(labels: dict[str, str], case: CaseData) -> str:
     return labels.get(case.case_id, case.case_id)
+
+
+def _strip_shared_token_prefix(values: dict[str, str]) -> dict[str, str]:
+    prefix = next(iter(values.values()))
+    for value in values.values():
+        common = 0
+        while common < min(len(prefix), len(value)) and prefix[common].casefold() == value[common].casefold():
+            common += 1
+        prefix = prefix[:common]
+    if len(prefix) >= 3 and prefix[-1] in "_-":
+        return {case_id: value[len(prefix):] for case_id, value in values.items()}
+    return values
+
+
+def _legend_case_labels(panel: Sequence[CurveBundle]) -> tuple[dict[str, str], str]:
+    cases = {bundle.case.case_id: bundle.case for bundle in panel}
+    full_labels = {
+        bundle.case.case_id: bundle.curves[0].case_label
+        for bundle in panel
+        if bundle.curves
+    }
+    compact_parts = {case_id: [] for case_id in cases}
+    common_values: list[str] = []
+    token_width = max((len(case.tokens) for case in cases.values()), default=0)
+    for position in range(token_width):
+        values = {
+            case_id: case.tokens[position] if position < len(case.tokens) else ""
+            for case_id, case in cases.items()
+        }
+        unique_values = set(values.values())
+        if len(unique_values) == 1:
+            common = re.sub(r"^\d+\s+", "", next(iter(unique_values)))
+            if common:
+                common_values.append(common)
+            continue
+        if not all(values.values()):
+            continue
+
+        values = _strip_shared_token_prefix(values)
+
+        without_index = {
+            case_id: re.sub(r"^\d+\s+", "", value)
+            for case_id, value in values.items()
+        }
+        if len(set(without_index.values())) == len(set(values.values())):
+            values = _strip_shared_token_prefix(without_index)
+
+        for case_id, value in values.items():
+            compact_parts[case_id].append(value)
+
+    labels = {
+        case_id: " · ".join(parts) if parts else "Selected case" if len(cases) == 1 else full_labels.get(case_id, case_id)
+        for case_id, parts in compact_parts.items()
+    }
+    collisions: dict[str, list[str]] = {}
+    for case_id, label in labels.items():
+        collisions.setdefault(label.casefold(), []).append(case_id)
+    for case_ids in collisions.values():
+        if len(case_ids) > 1:
+            for case_id in case_ids:
+                labels[case_id] = full_labels.get(case_id, case_id)
+    return labels, " · ".join(common_values)
+
+
+def _legend_column_layout(
+    longest_label: str,
+    case_count: int,
+    panel_count: int,
+    panel_width: int | None = None,
+) -> tuple[int, float]:
+    container_width = panel_width or (520 if panel_count == 4 else 1066)
+    available_width = max(1, container_width - 110)
+
+    if case_count <= 1:
+        return 1, available_width
+
+    column_width = max(160.0, 40.0 + 6.0 * len(longest_label))
+    layout_column_max = 2 if panel_count == 4 else LEGEND_COLUMN_MAX
+    columns = max(1, min(layout_column_max, case_count, int(available_width // column_width)))
+    return columns, available_width / columns - 45
 
 
 def _issue(case: CaseData, object_name: str, role: str, message: str, severity: str = "warning") -> ValidationIssue:
@@ -113,7 +192,6 @@ def _pair_bundle(
     x_transform: str = "raw exported values",
     y_transform: str = "raw exported values",
     dash: str = "solid",
-    line_colour: str = "",
 ) -> Curve:
     return Curve(
         case=case,
@@ -133,7 +211,6 @@ def _pair_bundle(
         raw_x_values=x_channel.numeric_values,
         raw_y_values=y_channel.numeric_values,
         dash=dash,
-        line_colour=line_colour,
     )
 
 
@@ -146,7 +223,13 @@ def build_wtg_pq_bundles(
 ) -> tuple[tuple[CurveBundle, ...], tuple[ValidationIssue, ...]]:
     bundles: list[CurveBundle] = []
     issues: list[ValidationIssue] = []
-    for case in sorted(cases, key=case_sort_key):
+    ordered_cases = sorted(cases, key=case_sort_key)
+    case_line_styles = {
+        case.case_id: CASE_LINE_STYLES[index % len(CASE_LINE_STYLES)]
+        for index, case in enumerate(ordered_cases)
+    }
+    for case in ordered_cases:
+        case_line_style = case_line_styles[case.case_id]
         for object_name in sorted(selected_objects, key=natural_key):
             p_channel = _resolved(case, object_name, "active_power", issues)
             q_channel = _resolved(case, object_name, "reactive_power", issues)
@@ -164,11 +247,12 @@ def build_wtg_pq_bundles(
                     y_factor=1.0,
                     x_label="Reactive power, Q",
                     y_label="Active power, P",
+                    dash=case_line_style,
                 )
             ]
-            for role, enabled, name, dash in (
-                ("qmin", show_qmin, "Qmin capability boundary", "dash"),
-                ("qmax", show_qmax, "Qmax capability boundary", "dot"),
+            for role, enabled, name in (
+                ("qmin", show_qmin, "Qmin capability boundary"),
+                ("qmax", show_qmax, "Qmax capability boundary"),
             ):
                 if not enabled:
                     continue
@@ -189,8 +273,7 @@ def build_wtg_pq_bundles(
                         x_label="Reactive power, Q",
                         y_label="Active power, P",
                         series_name=name,
-                        dash=dash,
-                        line_colour="#687386",
+                        dash=case_line_style,
                     )
                 )
             bundles.append(CurveBundle(object_name, case, tuple(curves)))
@@ -361,50 +444,44 @@ def _layout_count(layout: str) -> int:
     raise ValueError(f"Unknown plot layout: {layout}")
 
 
-def _auto_strategy(bundles: Sequence[CurveBundle]) -> str:
-    element_count = len({bundle.element_name for bundle in bundles})
-    case_count = len({bundle.case.case_id for bundle in bundles})
-    if element_count == 1 and case_count > 1:
-        return "By case"
-    if case_count == 1 and element_count > 1:
-        return "By element"
-    return "By element" if element_count >= case_count else "By case"
-
-
 def distribute_bundles(
-    bundles: Sequence[CurveBundle], panel_count: int, strategy: str = "Auto"
+    bundles: Sequence[CurveBundle], panel_count: int
 ) -> tuple[tuple[CurveBundle, ...], ...]:
-    """Assign each complete element×case bundle once, balancing panel bundle counts."""
+    """Assign complete bundles once, balancing plotted points across panels."""
     ordered = sorted(bundles, key=lambda bundle: (natural_key(bundle.element_name), case_sort_key(bundle.case)))
     if not ordered:
         return ()
     panel_count = min(max(1, panel_count), len(ordered))
-    chosen = _auto_strategy(ordered) if strategy == "Auto" else strategy
-    if chosen not in {"By element", "By case"}:
-        raise ValueError(f"Unknown bundle distribution: {strategy}")
+    group_by_element = len({bundle.element_name for bundle in ordered}) >= len(
+        {bundle.case.case_id for bundle in ordered}
+    )
 
     grouped: dict[str, list[CurveBundle]] = {}
     for bundle in ordered:
-        key = bundle.element_name if chosen == "By element" else bundle.case.case_id
+        key = bundle.element_name if group_by_element else bundle.case.case_id
         grouped.setdefault(key, []).append(bundle)
     group_items = sorted(
         grouped.items(),
-        key=lambda item: natural_key(item[0]) if chosen == "By element" else case_sort_key(item[1][0].case),
+        key=lambda item: natural_key(item[0]) if group_by_element else case_sort_key(item[1][0].case),
     )
 
-    panels: list[list[CurveBundle]] = [[] for _ in range(panel_count)]
-    for _, group in group_items:
-        panel_index = min(range(panel_count), key=lambda index: (len(panels[index]), index))
-        panels[panel_index].extend(group)
+    def group_weight(group: Sequence[CurveBundle]) -> int:
+        return sum(len(curve.x_values) for bundle in group for curve in bundle.curves)
 
-    # Split a group only when needed to avoid an empty panel and there are enough bundles.
-    for empty_index in [index for index, panel in enumerate(panels) if not panel]:
-        donors = [index for index, panel in enumerate(panels) if len(panel) > 1]
-        if not donors:
-            break
-        donor_index = max(donors, key=lambda index: (len(panels[index]), -index))
-        moved = panels[donor_index].pop()
-        panels[empty_index].append(moved)
+    # Keep case/element groups when possible; otherwise balance individual bundles.
+    if len(group_items) < panel_count:
+        group_items = [
+            (str(index), [bundle])
+            for index, bundle in enumerate(bundle for _, group in group_items for bundle in group)
+        ]
+    group_items.sort(key=lambda item: -group_weight(item[1]))
+
+    panels: list[list[CurveBundle]] = [[] for _ in range(panel_count)]
+    panel_weights = [0] * panel_count
+    for _, group in group_items:
+        panel_index = min(range(panel_count), key=lambda index: (panel_weights[index], len(panels[index]), index))
+        panels[panel_index].extend(group)
+        panel_weights[panel_index] += group_weight(group)
 
     for panel in panels:
         panel.sort(key=lambda bundle: (natural_key(bundle.element_name), case_sort_key(bundle.case)))
@@ -446,68 +523,81 @@ def build_plot_set(
     reference_y: Sequence[tuple[float, str]] = (),
 ) -> PlotSet:
     panel_count = _layout_count(options.layout)
-    panels = distribute_bundles(bundles, panel_count, options.distribution)
+    panels = distribute_bundles(bundles, panel_count)
     flat_bundles = tuple(bundle for panel in panels for bundle in panel)
     shared_x, shared_y = bundle_ranges(flat_bundles, [value for value, _ in reference_y])
-    x_range = options.x_range if options.x_range is not None else (None if options.independent_ranges else shared_x)
-    y_range = options.y_range if options.y_range is not None else (None if options.independent_ranges else shared_y)
-    height = options.height or (700 if panel_count == 1 else 520 if panel_count == 2 else 450)
+    base_height = 700 if panel_count == 1 else 520 if panel_count == 2 else 450
+    panel_legend_data = [_legend_case_labels(panel) for panel in panels]
+    max_panel_case_count = max((len(labels) for labels, _ in panel_legend_data), default=0)
+    longest_case_label = max(
+        (label for labels, _ in panel_legend_data for label in labels.values()),
+        key=len,
+        default="",
+    )
+    legend_column_capacity, legend_entry_width = _legend_column_layout(
+        longest_case_label, max_panel_case_count, panel_count, options.panel_width
+    )
+    max_legend_rows = math.ceil(max_panel_case_count / legend_column_capacity) if max_panel_case_count else 0
+    compact_grid_layout = panel_count == 4
+    legend_bottom = max(104 if compact_grid_layout else 110, 86 + 18 * max_legend_rows)
+    height = base_height + legend_bottom - 110
+    plot_area_height = height - 58 - legend_bottom
+    legend_y = -78 / plot_area_height
+    case_options_y = -46 / plot_area_height
     figures: list[go.Figure] = []
 
     for panel_index, panel in enumerate(panels, start=1):
         figure = go.Figure()
+        legend_cases: set[str] = set()
+        legend_labels, shared_case_options = panel_legend_data[panel_index - 1]
+        capability_labels = {
+            "Qmin capability boundary": "Qmin",
+            "Qmax capability boundary": "Qmax",
+        }
+        panel_objects = {bundle.element_name for bundle in panel}
+        panel_point_count = sum(
+            len(curve.x_values)
+            for bundle in panel
+            for curve in bundle.curves
+        )
+        trace_type = go.Scattergl if panel_point_count > WEBGL_POINT_THRESHOLD else go.Scatter
         for bundle in panel:
             for curve in bundle.curves:
                 if not any(value is not None for value in curve.x_values) or not any(
                     value is not None for value in curve.y_values
                 ):
                     continue
-                colour = curve.line_colour or stable_case_colour(curve.case.case_id)
-                name = f"{curve.element_name} | {curve.case_label}"
-                if curve.series_name != "operating curve" and curve.series_name != "power factor":
-                    name = f"{name} | {curve.series_name}"
-                customdata = [
-                    [
-                        curve.case_label,
-                        curve.case.filename,
-                        curve.case.source_path,
-                        curve.element_name,
-                        " | ".join(curve.case.tokens),
-                        curve.x_metric_description,
-                        curve.metric_description,
-                        curve.x_transform,
-                        curve.y_transform,
-                        curve.series_name,
-                        curve.case.case_id,
-                    ]
-                    for _ in curve.x_values
+                is_limit = curve.series_name in capability_labels
+                colour = "#555555" if is_limit else stable_case_colour(curve.case.case_id)
+                show_legend = curve.case.case_id not in legend_cases
+                legend_cases.add(curve.case.case_id)
+                legend_group = curve.case.case_id
+                trace_meta = [
+                    curve.case_label,
+                    curve.element_name,
+                    capability_labels.get(curve.series_name, ""),
                 ]
+                hover_lines = ["Case options: <b>%{meta[0]}</b>"]
+                if len(panel_objects) > 1:
+                    hover_lines.append("Equipment: %{meta[1]}")
+                if trace_meta[2]:
+                    hover_lines.append("Boundary: %{meta[2]}")
+                hover_lines.extend((
+                    f"{curve.x_label} ({curve.x_unit or 'unitless'}): %{{x:.7g}}",
+                    f"{curve.y_label} ({curve.y_unit or 'unitless'}): %{{y:.7g}}",
+                    "<extra></extra>",
+                ))
                 figure.add_trace(
-                    go.Scatter(
+                    trace_type(
                         x=curve.x_values,
                         y=curve.y_values,
-                        customdata=customdata,
-                        mode="lines+markers",
-                        name=name,
-                        legendgroup=f"{curve.element_name}|{curve.case.case_id}",
-                        line={"color": colour, "dash": curve.dash, "width": curve.width},
-                        marker={"size": 3.2, "color": colour},
-                        hovertemplate=(
-                            "<b>%{customdata[0]}</b><br>"
-                            "Case ID: %{customdata[10]}<br>"
-                            "Filename: %{customdata[1]}<br>"
-                            "Source path: %{customdata[2]}<br>"
-                            "Object: %{customdata[3]}<br>"
-                            "All filename tokens: %{customdata[4]}<br>"
-                            "X metric: %{customdata[5]}<br>"
-                            "Y metric: %{customdata[6]}<br>"
-                            "X transform: %{customdata[7]}<br>"
-                            "Y transform: %{customdata[8]}<br>"
-                            "Series: %{customdata[9]}<br>"
-                            f"{curve.x_label} ({curve.x_unit or 'unitless'}): %{{x:.7g}}<br>"
-                            f"{curve.y_label} ({curve.y_unit or 'unitless'}): %{{y:.7g}}"
-                            "<extra></extra>"
-                        ),
+                        meta=trace_meta,
+                        mode="lines",
+                        name=legend_labels.get(curve.case.case_id, curve.case_label),
+                        showlegend=show_legend,
+                        legendgroup=legend_group,
+                        line={"color": colour, "dash": curve.dash, "width": 1.4 if is_limit else curve.width},
+                        hovertemplate="<br>".join(hover_lines),
                     )
                 )
 
@@ -519,40 +609,67 @@ def build_plot_set(
                 line_width=1.2,
                 annotation_text=label,
                 annotation_position="top left",
+                annotation_xshift=48,
                 annotation_font_color="#9d2d29",
             )
+        title_parts = [title]
+        if len(panel_objects) == 1:
+            object_label = next(iter(panel_objects)).replace("\\", "/").rsplit("/", 1)[-1]
+            title_parts.append(object_label)
+        if len(panels) > 1:
+            title_parts.append(f"Panel {panel_index} of {len(panels)}")
         figure.update_layout(
-            title={"text": title if len(panels) == 1 else f"{title} · panel {panel_index}", "x": 0.02},
+            title={"text": " · ".join(title_parts), "x": 0.02},
             template="plotly_white",
             height=height,
-            margin={"l": 70, "r": 24, "t": 58, "b": 135},
+            margin={"l": 70, "r": 24, "t": 58, "b": legend_bottom},
             hovermode="closest",
             font={"color": "#263445", "family": "Arial, sans-serif", "size": 12},
             paper_bgcolor="white",
             plot_bgcolor="white",
             legend={
                 "orientation": "h",
-                "y": -0.26,
+                "y": legend_y,
+                "yref": "paper",
                 "x": 0,
+                "xref": "paper",
                 "xanchor": "left",
                 "yanchor": "top",
+                "entrywidth": legend_entry_width,
+                "entrywidthmode": "pixels",
+                "tracegroupgap": 0,
                 "groupclick": "togglegroup",
                 "itemclick": "toggle",
                 "itemdoubleclick": "toggleothers",
-                "tracegroupgap": 5,
-                "maxheight": 0.26,
-                "font": {"size": 10},
+                "font": {"size": 12},
             },
             showlegend=True,
         )
+        figure.add_annotation(
+            text=(
+                f"Case options: <b>{escape(shared_case_options)}</b>"
+                if shared_case_options
+                else "Case options"
+            ),
+            xref="paper",
+            yref="paper",
+            x=0,
+            y=case_options_y,
+            xanchor="left",
+            yanchor="top",
+            align="left",
+            showarrow=False,
+            font={"size": 12, "color": "#263445"},
+        )
         figure.update_xaxes(
             title_text=f"{x_title} ({panel[0].curves[0].x_unit or 'unitless'})" if panel else x_title,
+            title_standoff=6 if compact_grid_layout else 15,
             showgrid=True,
             gridcolor="#e6e9ed",
             zeroline=True,
             zerolinecolor="#b9c0c8",
-            range=list(x_range) if x_range else None,
-            autorange=True if x_range is None else False,
+            range=list(shared_x) if shared_x else None,
+            autorange=shared_x is None,
         )
         figure.update_yaxes(
             title_text=f"{y_title} ({panel[0].curves[0].y_unit or 'unitless'})" if panel else y_title,
@@ -560,13 +677,12 @@ def build_plot_set(
             gridcolor="#e6e9ed",
             zeroline=True,
             zerolinecolor="#b9c0c8",
-            range=list(y_range) if y_range else None,
-            autorange=True if y_range is None else False,
+            range=list(shared_y) if shared_y else None,
+            autorange=shared_y is None,
         )
         figures.append(figure)
 
-    chosen = _auto_strategy(flat_bundles) if options.distribution == "Auto" and flat_bundles else options.distribution
-    return PlotSet(tuple(figures), panels, tuple(bundles), (), chosen, x_range, y_range)
+    return PlotSet(tuple(figures), panels, tuple(bundles), ())
 
 
 def build_wtg_pq_figures(
@@ -586,7 +702,7 @@ def build_wtg_pq_figures(
         y_title="Active power, P",
         options=options,
     )
-    return PlotSet(result.figures, result.panels, result.bundles, issues, result.distribution_used, result.x_range, result.y_range)
+    return PlotSet(result.figures, result.panels, result.bundles, issues)
 
 
 def build_wtg_voltage_figures(
@@ -600,8 +716,8 @@ def build_wtg_voltage_figures(
     high_reference: float = 1.08,
 ) -> PlotSet:
     bundles, issues = build_wtg_voltage_bundles(cases, selected_objects, labels)
-    references = ((low_reference, f"Display reference {low_reference:g} p.u."),
-                  (high_reference, f"Display reference {high_reference:g} p.u.")) if show_references else ()
+    references = ((low_reference, f"Min = {low_reference:.2f} p.u."),
+                  (high_reference, f"Max = {high_reference:.2f} p.u.")) if show_references else ()
     result = build_plot_set(
         bundles,
         title="WTG terminal voltage",
@@ -610,7 +726,7 @@ def build_wtg_voltage_figures(
         options=options,
         reference_y=references,
     )
-    return PlotSet(result.figures, result.panels, result.bundles, issues, result.distribution_used, result.x_range, result.y_range)
+    return PlotSet(result.figures, result.panels, result.bundles, issues)
 
 
 def build_equipment_loading_figures(
@@ -620,20 +736,41 @@ def build_equipment_loading_figures(
     labels: dict[str, str],
     *,
     options: PlotOptions,
-    show_reference: bool = True,
     loading_reference: float = 100.0,
 ) -> PlotSet:
     bundles, issues = build_loading_bundles(cases, selected_objects, x_source, labels)
-    references = ((loading_reference, f"Display reference {loading_reference:g}%"),) if show_reference else ()
     result = build_plot_set(
         bundles,
         title="Equipment loading",
         x_title=f"−{x_source} active power interchange",
         y_title="Equipment loading",
         options=options,
-        reference_y=references,
+        reference_y=((loading_reference, f"Y = {loading_reference:g}%"),),
     )
-    return PlotSet(result.figures, result.panels, result.bundles, issues, result.distribution_used, result.x_range, result.y_range)
+    figures = list(result.figures)
+    for figure, panel in zip(figures, result.panels):
+        points = [
+            (float(x), float(y), curve)
+            for bundle in panel
+            for curve in bundle.curves
+            for x, y in zip(curve.x_values, curve.y_values)
+            if x is not None and y is not None and math.isfinite(float(x)) and math.isfinite(float(y))
+        ]
+        if not points:
+            continue
+        x_value, y_value, curve = max(points, key=lambda point: point[1])
+        figure.add_annotation(
+            x=x_value,
+            y=y_value,
+            text=f"{x_value:.1f} {curve.x_unit}<br>{y_value:.1f} {curve.y_unit}",
+            showarrow=True,
+            arrowhead=2,
+            ax=-40,
+            ay=-30,
+            font={"size": 11, "color": "#263445"},
+            bgcolor="rgba(255,255,255,0.8)",
+        )
+    return PlotSet(tuple(figures), result.panels, result.bundles, issues)
 
 
 def build_poc_pq_figures(
@@ -651,7 +788,7 @@ def build_poc_pq_figures(
         y_title="−Active power interchange",
         options=options,
     )
-    return PlotSet(result.figures, result.panels, result.bundles, issues, result.distribution_used, result.x_range, result.y_range)
+    return PlotSet(result.figures, result.panels, result.bundles, issues)
 
 
 def build_power_factor_figures(
@@ -672,7 +809,7 @@ def build_power_factor_figures(
         y_title="Power factor",
         options=options,
     )
-    return PlotSet(result.figures, result.panels, result.bundles, issues, result.distribution_used, result.x_range, result.y_range)
+    return PlotSet(result.figures, result.panels, result.bundles, issues)
 
 
 def plotted_data_csv(bundles: Sequence[CurveBundle]) -> bytes:
@@ -730,19 +867,3 @@ def plotted_data_csv(bundles: Sequence[CurveBundle]) -> bytes:
                     ]
                 )
     return output.getvalue().encode("utf-8-sig")
-
-
-def clipped_values(
-    bundles: Sequence[CurveBundle],
-    x_range: tuple[float, float] | None,
-    y_range: tuple[float, float] | None,
-) -> tuple[int, int]:
-    x_clipped = y_clipped = 0
-    for bundle in bundles:
-        for curve in bundle.curves:
-            if x_range:
-                x_clipped += sum(1 for value in _finite(curve.x_values) if value < x_range[0] or value > x_range[1])
-            if y_range:
-                y_clipped += sum(1 for value in _finite(curve.y_values) if value < y_range[0] or value > y_range[1])
-    return x_clipped, y_clipped
-

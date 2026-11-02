@@ -14,3 +14,5 @@ chart_exports/
 *.png
 *.zip
 *.log
+!assets/mpe_app_wordmark.png
+!assets/mpe_app_icon.png

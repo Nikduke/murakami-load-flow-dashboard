@@ -2,24 +2,24 @@
 
 ## Current behaviour
 
-The local Streamlit app reads loose PowerFactory CSV exports, CSVs inside ZIPs, and optional `Mapping.xlsx` / `Mapping_*.xlsx` workbooks from `Input_files/` or session uploads. It parses each case independently and matches channels by object name plus exact metric description. Blank metric headings are excluded. Duplicate case stems are reported and excluded rather than overwritten.
+The app reads PowerFactory CSVs and ZIP archives from `Input_files/` and session uploads. It is intended for desktop browser use. The MPE wordmark and always-visible uploader sit at the top of the sidebar, matching the Harmonics dashboard. The main column starts with the dashboard title and plots. A single `Mapping.xlsx` workbook is applied automatically; only multiple mapping candidates require a choice.
 
-The sidebar provides local reload and session-upload clearing. Local file reads and parsed cases are cached by changing file metadata and source content digests. Uploads remain in the current browser session and are never extracted or saved by the app.
+Each cascading filename-token filter starts with its first available value when a new case set loads, leaving one initial case combination selected. The sidebar shows each token as checkboxes with **Select all** and **Clear all** buttons; **All cases** selects the full set. Filters cascade from left to right and apply to all five chart tabs.
 
-Filename tokens are split only on `__`. Global cascading multiselects apply to every chart tab. A selected mapping workbook changes token labels only. With no mapping row, the UI uses `Case parameter N`.
+Each chart tab shows all equipment choices as text-sized chips across the main content width. Unselected chips are light green; selected chips are light amber. A plain click selects one item; **Ctrl-click** adds or removes items. A new tab selection starts with its first equipment chip selected. After the chips, tab-specific controls appear at the left of the settings row, with each label inline before its input. **Plot layout** and its choices sit at the far right. The layout defaults to **1 plot** and can be changed to **1×2** (one column, two rows) or **2×2** (two columns, two rows). Panels are filled automatically by plotted-point weight.
 
-## Chart tabs
+Each plot has one left-aligned native Plotly case legend below it. Entries flow into rows using the rendered panel width and the longest displayed case label, so columns reflow when the browser or sidebar changes width. Full-width plots allow up to four columns; 2×2 panels allow up to two. The legend area is sized for the deepest panel so split-panel margins stay aligned. Entries show only token values that vary within that panel; common token values appear once in bold after **Case options:**. Legend font size is 12 and group gaps are removed. A single-case panel uses **Selected case** as its item and shows its case options in the header. Hover retains the case-option label and X/Y names, units and values; it only adds equipment when a panel contains multiple objects, and identifies Qmin/Qmax on boundary traces. In WTG P–Q, each case has a distinct line pattern shared by its operating curve, Qmin and Qmax boundaries; the boundaries are dark grey, while the operating curve retains its case colour. The case legend entry therefore identifies its limit pattern and toggles all three traces together. Filenames, paths, metric descriptions and transforms are omitted. Chart titles identify the chart family, the equipment when a panel contains one object, and the panel number for split layouts.
 
-1. **WTG P–Q** plots exported Q against P and can add Qmin and Qmax capability boundaries.
-2. **WTG Terminal Voltage** plots terminal voltage against active power and offers editable 0.92 / 1.08 p.u. display references.
-3. **Equipment Loading** plots each selected loading against negative POC active interchange and offers a 100% display reference.
-4. **POC P–Q** plots negative reactive interchange against negative active interchange.
-5. **Power Factor** plots against sweep index by default. The original plot sign inverts `Exp_Cable_1` and `Exp_Cable_2`; other objects remain raw unless the user changes the sign option.
+**WTG P–Q** plots Q against P with optional Qmin/Qmax boundaries. **WTG Terminal Voltage** plots U against P with editable minimum/maximum guide lines (0.92/1.08 p.u.), labelled **Min =** and **Max =** and shifted right of the zero axis. **Equipment Loading** plots each loading against negative POC active interchange, marks the highest point in each panel and draws a manually adjustable red dashed reference (100% by default). **POC P–Q** uses the negative export convention. **Power Factor** uses sweep index by default and keeps the verified sign control.
 
-Every tab has 1 plot, 1×2 and 2×2 layouts; Auto, By element and By case bundle distribution; optional axis limits; Plotly pan, zoom, hover and native image export; and a CSV download of plotted X/Y data with source and transform metadata. Element selections are held separately per tab. Voltage selection starts from the P–Q selection when available.
+The chart summary reports cases, elements, curves and panels. Downloaded CSV retains full case/source provenance. The separate plotted-sources table is removed.
 
-Reference lines are visual guides only. The dashboard displays existing results and does not run PowerFactory or evaluate compliance.
+Data validation is collapsed unless errors need attention. It shows input/case counts and a short issue table with severity, issue, affected-file count, one example filename and object where relevant. Identical issues are grouped so repeated export notices do not create duplicate rows. It does not repeat case IDs or full paths. With no valid cases loaded, the app shows one upload prompt instead of empty chart tabs.
+
+Local reads, parsed data, uploads, channel catalogues, mappings and recent plot sets are cached within the session. Local file changes are detected from path, size and modification time; uploads stay in the current session and can be removed in the uploader. No separate input-actions panel is required.
+
+The dashboard displays existing results only. Reference lines are visual guides; it does not run PowerFactory or assess compliance.
 
 ## Known scope
 
-PNG ZIP export is deferred. Individual Plotly figures retain their native image download controls. The app supports UTF-8 and UTF-8-with-BOM CSV input; other encodings produce an actionable validation error.
+PNG ZIP export is deferred. Individual Plotly figures retain their native image download controls. The app supports UTF-8 and UTF-8-with-BOM CSV input.

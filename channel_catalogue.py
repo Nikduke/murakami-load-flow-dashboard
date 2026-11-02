@@ -34,7 +34,7 @@ def normalise_description(description: str) -> str:
 
 
 def _object_channels(case: CaseData, object_name: str) -> tuple[Channel, ...]:
-    return tuple(channel for channel in case.channels if channel.object_name == object_name)
+    return case.channels_for(object_name)
 
 
 def _unitless_metric(description: str) -> str:
@@ -108,42 +108,42 @@ def is_wtg_object_name(object_name: str) -> bool:
 
 def discover_wtg_objects(cases: list[CaseData] | tuple[CaseData, ...]) -> list[str]:
     names = {
-        channel.object_name
+        object_name
         for case in cases
-        for channel in case.channels
-        if is_wtg_object_name(channel.object_name)
-        and (_has_pair(case, channel.object_name, "active_power", "reactive_power")
-             or _has_pair(case, channel.object_name, "active_power", "voltage"))
+        for object_name in case.object_names
+        if is_wtg_object_name(object_name)
+        and (_has_pair(case, object_name, "active_power", "reactive_power")
+             or _has_pair(case, object_name, "active_power", "voltage"))
     }
     return sorted(names, key=lambda name: name.casefold())
 
 
 def discover_loading_objects(cases: list[CaseData] | tuple[CaseData, ...]) -> list[str]:
     names = {
-        channel.object_name
+        object_name
         for case in cases
-        for channel in case.channels
-        if resolve_channel(case, channel.object_name, "loading").status == "found"
+        for object_name in case.object_names
+        if resolve_channel(case, object_name, "loading").status == "found"
     }
     return sorted(names, key=lambda name: name.casefold())
 
 
 def discover_poc_objects(cases: list[CaseData] | tuple[CaseData, ...]) -> list[str]:
     names = {
-        channel.object_name
+        object_name
         for case in cases
-        for channel in case.channels
-        if _has_pair(case, channel.object_name, "active_interchange", "reactive_interchange")
+        for object_name in case.object_names
+        if _has_pair(case, object_name, "active_interchange", "reactive_interchange")
     }
     return sorted(names, key=lambda name: name.casefold())
 
 
 def discover_power_factor_objects(cases: list[CaseData] | tuple[CaseData, ...]) -> list[str]:
     names = {
-        channel.object_name
+        object_name
         for case in cases
-        for channel in case.channels
-        if resolve_channel(case, channel.object_name, "power_factor").status == "found"
+        for object_name in case.object_names
+        if resolve_channel(case, object_name, "power_factor").status == "found"
     }
     return sorted(names, key=lambda name: name.casefold())
 

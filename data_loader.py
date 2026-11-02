@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from functools import cached_property
 from hashlib import sha256
 from io import BytesIO, StringIO
 from pathlib import Path, PurePosixPath
@@ -27,7 +28,7 @@ class InputFile:
     archive_name: str = ""
     member_path: str = ""
 
-    @property
+    @cached_property
     def digest(self) -> str:
         return sha256(self.content).hexdigest()
 
@@ -53,8 +54,19 @@ class CaseData:
     channels: tuple[Channel, ...]
     validation_provenance: tuple[str, ...]
 
+    @cached_property
+    def _channels_by_object(self) -> dict[str, tuple[Channel, ...]]:
+        grouped: dict[str, list[Channel]] = {}
+        for channel in self.channels:
+            grouped.setdefault(channel.object_name, []).append(channel)
+        return {name: tuple(channels) for name, channels in grouped.items()}
+
+    @property
+    def object_names(self) -> tuple[str, ...]:
+        return tuple(self._channels_by_object)
+
     def channels_for(self, object_name: str) -> tuple[Channel, ...]:
-        return tuple(channel for channel in self.channels if channel.object_name == object_name)
+        return self._channels_by_object.get(object_name, ())
 
 
 @dataclass(frozen=True)
