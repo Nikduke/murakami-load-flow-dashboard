@@ -2,6 +2,7 @@
 
 ## 2026-11-05
 
+- Omitted the initial zero-power sample at sweep index 0 from Power Factor plots and plotted-data downloads.
 - Added WTG P–Q and terminal-voltage violation tables below their plots, grouped by case, WTG and limit with point counts and worst excess.
 
 ## 2026-10-29

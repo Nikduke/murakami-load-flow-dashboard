@@ -378,6 +378,9 @@ def build_power_factor_bundles(
     bundles: list[CurveBundle] = []
     issues: list[ValidationIssue] = []
     for case in sorted(cases, key=case_sort_key):
+        zero_sweep_indices = {
+            index for index, sweep_index in enumerate(case.sweep_index) if sweep_index == 0
+        }
         for object_name in sorted(selected_objects, key=natural_key):
             y_channel = _resolved(case, object_name, "power_factor", issues)
             if y_channel is None:
@@ -411,6 +414,16 @@ def build_power_factor_bundles(
                 x_unit = x_channel.unit
                 x_label = f"−{x_source} active power interchange"
                 x_transform = f"−1 × exported Active Power Interchange from {x_source}"
+            x_values = _transform(raw_x, -1.0 if x_source != "Sweep index" else 1.0)
+            y_values = _transform(y_channel.numeric_values, y_factor)
+            x_values = tuple(
+                None if index in zero_sweep_indices else value
+                for index, value in enumerate(x_values)
+            )
+            y_values = tuple(
+                None if index in zero_sweep_indices else value
+                for index, value in enumerate(y_values)
+            )
             curve = Curve(
                 case=case,
                 case_label=_case_label(labels, case),
@@ -424,8 +437,8 @@ def build_power_factor_bundles(
                 y_unit="",
                 x_transform=x_transform,
                 y_transform=y_transform,
-                x_values=_transform(raw_x, -1.0 if x_source != "Sweep index" else 1.0),
-                y_values=_transform(y_channel.numeric_values, y_factor),
+                x_values=x_values,
+                y_values=y_values,
                 raw_x_values=raw_x,
                 raw_y_values=y_channel.numeric_values,
             )

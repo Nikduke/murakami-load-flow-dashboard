@@ -48,7 +48,7 @@ APP_LOGO_PATH = APP_DIR / "assets" / "mpe_app_wordmark.png"
 TAB_NAMES = ("WTG P–Q", "WTG Terminal Voltage", "Equipment Loading", "POC P–Q", "Power Factor")
 LAYOUTS = ("1 plot", "1×2", "2×2")
 CASE_FILTER_DEFAULTS_VERSION = 2
-PLOT_CACHE_VERSION = 21
+PLOT_CACHE_VERSION = 22
 _PLOT_WIDTH_SENSOR = st.components.v2.component(
     "murakami_plot_width_sensor",
     html='<div id="plot-width-sensor" aria-hidden="true"></div>',

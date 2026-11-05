@@ -137,7 +137,7 @@ def test_uploaded_csv_values_are_rendered_correctly_on_all_five_tabs():
             "−Active power interchange (MW)",
         ),
         "Power Factor": (
-            [([0.0, 1.0], [-0.95, -0.96])],
+            [([None, 1.0], [None, -0.96])],
             "Sweep index (index)",
             "Power factor (unitless)",
         ),

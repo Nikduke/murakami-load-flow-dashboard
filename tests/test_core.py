@@ -456,8 +456,8 @@ def test_plot_signs_and_capability_curves_are_numeric_and_grouped():
 
     pf = build_power_factor_figures([case], ["Exp_Cable_1", "Exp_Cable_2"], labels, options=options)
     pf_values = {bundle.element_name: bundle.curves[0].y_values for bundle in pf.bundles}
-    assert pf_values["Exp_Cable_1"] == (-.9, -.8, -.7)
-    assert pf_values["Exp_Cable_2"] == (-.9, -.8, -.7)
+    assert pf_values["Exp_Cable_1"] == (None, -.8, -.7)
+    assert pf_values["Exp_Cable_2"] == (None, -.8, -.7)
 
 
 def test_plot_legend_and_hover_use_compact_case_options():
@@ -795,8 +795,33 @@ def test_real_murakami_objects_columns_and_curve_values(murakami_cases):
     by_object = {bundle.element_name: bundle.curves[0] for bundle in pf.bundles}
     for object_name in ("Exp_Cable_1", "Exp_Cable_2"):
         channel = _find(case, object_name, "Power Factor")
-        assert by_object[object_name].x_values[:2] == (0.0, 1.0)
-        assert by_object[object_name].y_values[0] == pytest.approx(-channel.numeric_values[0])
+        assert by_object[object_name].x_values[:3] == (None, 1.0, 2.0)
+        assert by_object[object_name].y_values[0] is None
         assert by_object[object_name].y_values[1] == pytest.approx(-channel.numeric_values[1])
     assert _find(case, "Exp_Cable_1", "Power Factor").numeric_values[0] == pytest.approx(.95)
     assert _find(case, "Exp_Cable_1", "Power Factor").numeric_values[1] == pytest.approx(-.95)
+
+
+def test_power_factor_excludes_zero_sweep_sample_on_both_x_axes_and_in_csv():
+    content = _csv_bytes(value_overrides={"Active Power Interchange in MW": (0, -2, -3)})
+    case = parse_cases([_input(content=content)]).cases[0]
+    labels = {case.case_id: "case-A"}
+
+    sweep = build_power_factor_figures(
+        [case], ["Exp_Cable_1"], labels, options=PlotOptions()
+    ).bundles[0].curves[0]
+    power_result = build_power_factor_figures(
+        [case], ["Exp_Cable_1"], labels, options=PlotOptions(), x_source="POC1"
+    )
+    power = power_result.bundles[0].curves[0]
+
+    assert sweep.x_values == (None, 1.0, 2.0)
+    assert sweep.y_values == (None, -.8, -.7)
+    assert power.x_values == (None, 2.0, 3.0)
+    assert power.y_values == (None, -.8, -.7)
+
+    rows = list(
+        csv.DictReader(StringIO(plotted_data_csv(power_result.bundles).decode("utf-8-sig")))
+    )
+    assert [row["sweep_index"] for row in rows] == ["1.0", "2.0"]
+    assert [row["raw_y_value"] for row in rows] == ["0.8", "0.7"]
