@@ -20,6 +20,7 @@ from channel_catalogue import (
 )
 import data_loader
 from data_loader import InputFile, expand_inputs, parse_cases
+from limit_analysis import wtg_pq_limit_violations, wtg_voltage_limit_violations
 from mapping import load_mapping, token_heading
 from plotting import (
     PlotOptions,
@@ -39,6 +40,7 @@ def _csv_bytes(
     *,
     duplicate_q=False,
     extra_wtgs: Sequence[str] = (),
+    value_overrides: dict[str, Sequence[float]] | None = None,
 ) -> bytes:
     headers = [
         ("Results", "Index"),
@@ -93,6 +95,8 @@ def _csv_bytes(
         "Loading in %": (60, 70, 80),
         "Power Factor": (.9, .8, .7),
     }
+    if value_overrides:
+        values.update(value_overrides)
     body = []
     for sample in range(3):
         row = [""] * len(headers)
@@ -300,6 +304,68 @@ def test_missing_and_conflicting_metrics_have_actionable_resolution_status():
         [missing_case], ["WTG 1\\WTG 1"], {missing_case.case_id: "case-A"}, options=PlotOptions()
     )
     assert any("no channel" in issue.message for issue in result.issues)
+
+
+def test_wtg_pq_limit_violations_use_same_sweep_point_and_include_only_breaches():
+    overrides = {
+        "Active Power in MW": (10, 20, 30),
+        "Reactive Power in Mvar": (-4, 2, 5),
+        "Lower limit of reactive power in Mvar": (-3, -1, -2),
+        "Upper limit of reactive power in Mvar": (-2, 2, 4),
+    }
+    case = parse_cases([_input(content=_csv_bytes(value_overrides=overrides))]).cases[0]
+    rows = wtg_pq_limit_violations([case], ["WTG 1\\WTG 1"], {case.case_id: "Case A"})
+
+    assert len(rows) == 2
+    by_limit = {row["Limit"]: row for row in rows}
+    assert by_limit["Qmin"] == {
+        "WTG": "WTG 1",
+        "Case": "Case A",
+        "Limit": "Qmin",
+        "Violating points": 1,
+        "P at worst point (MW)": 10.0,
+        "Q (Mvar)": -4.0,
+        "Limit (Mvar)": -3.0,
+        "Excess (Mvar)": 1.0,
+    }
+    assert by_limit["Qmax"]["Violating points"] == 1
+    assert by_limit["Qmax"]["P at worst point (MW)"] == 30
+    assert by_limit["Qmax"]["Q (Mvar)"] == 5
+    assert by_limit["Qmax"]["Limit (Mvar)"] == 4
+    assert by_limit["Qmax"]["Excess (Mvar)"] == 1
+
+    at_limits = {
+        "Reactive Power in Mvar": (-3, 2, 4),
+        "Lower limit of reactive power in Mvar": (-3, -1, -2),
+        "Upper limit of reactive power in Mvar": (-2, 2, 4),
+    }
+    equal_case = parse_cases([_input(content=_csv_bytes(value_overrides=at_limits))]).cases[0]
+    assert wtg_pq_limit_violations([equal_case], ["WTG 1\\WTG 1"], {}) == []
+
+
+def test_wtg_voltage_limit_violations_use_manual_limits_and_exclude_equality():
+    overrides = {
+        "Active Power in MW": (10, 20, 30),
+        "Voltage, Magnitude in p.u.": (.91, .92, 1.09),
+    }
+    case = parse_cases([_input(content=_csv_bytes(value_overrides=overrides))]).cases[0]
+    rows = wtg_voltage_limit_violations(
+        [case], ["WTG 1\\WTG 1"], {case.case_id: "Case A"}, .92, 1.08
+    )
+
+    assert len(rows) == 2
+    by_limit = {row["Limit"]: row for row in rows}
+    assert by_limit["Min voltage"]["Violating points"] == 1
+    assert by_limit["Min voltage"]["P at worst point (MW)"] == 10
+    assert by_limit["Min voltage"]["Voltage (p.u.)"] == .91
+    assert by_limit["Min voltage"]["Limit (p.u.)"] == .92
+    assert by_limit["Min voltage"]["Excess (p.u.)"] == pytest.approx(.01)
+    assert by_limit["Max voltage"]["Violating points"] == 1
+    assert by_limit["Max voltage"]["P at worst point (MW)"] == 30
+    assert by_limit["Max voltage"]["Voltage (p.u.)"] == 1.09
+    assert by_limit["Max voltage"]["Limit (p.u.)"] == 1.08
+    assert by_limit["Max voltage"]["Excess (p.u.)"] == pytest.approx(.01)
+    assert wtg_voltage_limit_violations([case], ["WTG 1\\WTG 1"], {}, .92, .92) == []
 
 
 def test_plot_signs_and_capability_curves_are_numeric_and_grouped():
@@ -655,6 +721,20 @@ def test_real_murakami_objects_columns_and_curve_values(murakami_cases):
 
     voltage = build_wtg_voltage_figures([case], [wtg], labels, options=options)
     assert voltage.bundles[0].curves[0].y_values[1] == pytest.approx(.976772)
+
+    pq_violations = wtg_pq_limit_violations([case], [wtg], labels)
+    assert len(pq_violations) == 1
+    assert pq_violations[0]["Limit"] == "Qmax"
+    assert pq_violations[0]["Violating points"] == 41
+    assert pq_violations[0]["P at worst point (MW)"] == pytest.approx(14.983335)
+    assert pq_violations[0]["Excess (Mvar)"] == pytest.approx(3.546701)
+
+    voltage_violations = wtg_voltage_limit_violations([case], [wtg], labels, .92, 1.08)
+    assert len(voltage_violations) == 1
+    assert voltage_violations[0]["Limit"] == "Max voltage"
+    assert voltage_violations[0]["Violating points"] == 9
+    assert voltage_violations[0]["Voltage (p.u.)"] == pytest.approx(1.088737)
+    assert voltage_violations[0]["Excess (p.u.)"] == pytest.approx(.008737)
 
     all_case_labels = case_labels(cases, varying_token_positions(cases))
     one_plot = build_wtg_pq_figures(cases, [wtg], all_case_labels, options=PlotOptions())

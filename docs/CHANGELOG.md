@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-05
+
+- Added WTG P–Q and terminal-voltage violation tables below their plots, grouped by case, WTG and limit with point counts and worst excess.
+
 ## 2026-10-29
 
 - Created the local PowerFactory load-flow CSV dashboard with in-memory ZIP and upload handling, mapping workbook support and cascading filename-token filters.

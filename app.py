@@ -26,6 +26,7 @@ from data_loader import (
     expand_inputs,
     parse_cases,
 )
+from limit_analysis import wtg_pq_limit_violations, wtg_voltage_limit_violations
 from mapping import MappingResult, load_mapping, token_heading
 from plotting import (
     PlotOptions,
@@ -423,7 +424,51 @@ def _measure_plot_panel(tab_id: str, layout: str) -> None:
     )
 
 
-def _render_plotset(tab_id: str, plot_set: PlotSet, cases: Sequence[CaseData], layout: str) -> None:
+def _render_violation_table(
+    tab_id: str,
+    title: str,
+    rows: Sequence[dict[str, str | int | float]],
+    empty_message: str,
+) -> None:
+    st.subheader(title)
+    if not rows:
+        st.info(empty_message)
+        return
+
+    number_formats = {
+        "Violating points": "%d",
+        "P at worst point (MW)": "%.3f",
+        "Q (Mvar)": "%.3f",
+        "Limit (Mvar)": "%.3f",
+        "Excess (Mvar)": "%.3f",
+        "Voltage (p.u.)": "%.4f",
+        "Limit (p.u.)": "%.4f",
+        "Excess (p.u.)": "%.4f",
+    }
+    st.dataframe(
+        rows,
+        hide_index=True,
+        width="stretch",
+        height=min(42 + 36 * min(len(rows), 8), 330),
+        key=f"{tab_id}_limit_violations",
+        column_config={
+            column: st.column_config.NumberColumn(format=format_string)
+            for column, format_string in number_formats.items()
+            if column in rows[0]
+        },
+    )
+
+
+def _render_plotset(
+    tab_id: str,
+    plot_set: PlotSet,
+    cases: Sequence[CaseData],
+    layout: str,
+    *,
+    violation_heading: str | None = None,
+    violation_rows: Sequence[dict[str, str | int | float]] | None = None,
+    violation_empty_message: str = "",
+) -> None:
     if not cases:
         st.info("No cases match the current filters. Select more values or click All cases in the sidebar.")
         return
@@ -452,6 +497,14 @@ def _render_plotset(tab_id: str, plot_set: PlotSet, cases: Sequence[CaseData], l
                         width="stretch",
                         config={"displayModeBar": "hover", "responsive": True, "scrollZoom": True},
                     )
+
+    if violation_heading is not None:
+        _render_violation_table(
+            tab_id,
+            violation_heading,
+            violation_rows or (),
+            violation_empty_message,
+        )
 
     st.download_button(
         "Download plotted data (CSV)",
@@ -637,7 +690,32 @@ def _render_tabs(
                     build_kwargs,
                 )
         issues.extend(result.issues)
-        _render_plotset(tab_id, result, cases, layout)
+        violation_heading = None
+        violation_rows = None
+        violation_empty_message = ""
+        if active_index == 0:
+            violation_heading = "WTG P–Q limit violations"
+            violation_rows = wtg_pq_limit_violations(cases, selected, labels)
+            violation_empty_message = "No selected WTG P–Q points fall outside the available Qmin/Qmax limits."
+        elif active_index == 1:
+            violation_heading = "WTG terminal-voltage limit violations"
+            violation_rows = wtg_voltage_limit_violations(
+                cases, selected, labels, float(low), float(high)
+            )
+            violation_empty_message = (
+                "Set the minimum below the maximum to check for voltage limit violations."
+                if low >= high
+                else "No selected terminal-voltage points fall outside the current min/max limits."
+            )
+        _render_plotset(
+            tab_id,
+            result,
+            cases,
+            layout,
+            violation_heading=violation_heading,
+            violation_rows=violation_rows,
+            violation_empty_message=violation_empty_message,
+        )
 
     return tuple(issues)
 

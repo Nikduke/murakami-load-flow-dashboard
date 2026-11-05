@@ -21,6 +21,15 @@ def _uploaded_chart_csv() -> bytes:
     return content.getvalue().encode("utf-8")
 
 
+def _uploaded_violation_csv() -> bytes:
+    rows = list(csv.reader(StringIO(_uploaded_chart_csv().decode("utf-8"))))
+    rows[2][1:6] = ["10", "-0.6", "0.91", "-0.5", "0.5"]
+    rows[3][1:6] = ["20", "0.7", "1.09", "-0.5", "0.5"]
+    content = StringIO(newline="")
+    csv.writer(content).writerows(rows)
+    return content.getvalue().encode("utf-8")
+
+
 def _app_test_script() -> str:
     return """
 import streamlit as st
@@ -71,6 +80,34 @@ def test_uploaded_csv_loads_cases_and_shows_all_five_plot_tabs():
     assert any(item.label == "V1" for item in app.sidebar.checkbox)
     assert "1 of 1 cases selected" in [item.value for item in app.caption]
     assert app.segmented_control(key="wtg_pq_layout").value == "1 plot"
+
+
+def test_wtg_tabs_show_case_limit_violations_below_the_plots():
+    app = AppTest.from_string(_app_test_script(), default_timeout=45).run()
+    app.sidebar.file_uploader[0].set_value(
+        ("StudyA__V1.csv", _uploaded_violation_csv(), "text/csv")
+    ).run()
+
+    assert not app.exception
+    assert any(item.value == "WTG P–Q limit violations" for item in app.subheader)
+    pq_rows = app.dataframe[0].value
+    assert set(pq_rows["Limit"]) == {"Qmin", "Qmax"}
+    assert pq_rows["Violating points"].tolist() == [1, 1]
+    assert set(pq_rows["Case"]) == {"StudyA · V1"}
+
+    app.checkbox(key="pq_show_qmax").set_value(False).run()
+    assert not app.exception
+    assert set(app.dataframe[0].value["Limit"]) == {"Qmin", "Qmax"}
+
+    app.session_state["plot_tabs"] = "WTG Terminal Voltage"
+    app.run()
+
+    assert not app.exception
+    assert any(item.value == "WTG terminal-voltage limit violations" for item in app.subheader)
+    voltage_rows = app.dataframe[0].value
+    assert set(voltage_rows["Limit"]) == {"Min voltage", "Max voltage"}
+    assert voltage_rows["Violating points"].tolist() == [1, 1]
+    assert set(voltage_rows["Case"]) == {"StudyA · V1"}
 
 
 def test_uploaded_csv_values_are_rendered_correctly_on_all_five_tabs():

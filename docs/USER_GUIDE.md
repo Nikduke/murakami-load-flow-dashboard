@@ -24,6 +24,8 @@ Each chart tab has a compact layout selector. The default **1 plot** view shows 
 
 Each plot has one left-aligned case legend beneath it. Entries use equal pixel widths estimated from the longest case name and the selected layout, then wrap into rows as needed. Values shared by every case in a panel appear once in bold after **Case options:**; each entry shows only values that vary. Selecting a legend entry toggles that case's curves. In WTG P–Q, each case has its own line pattern, shared by its operating curve and Qmin/Qmax boundaries; limits are dark grey and operating curves keep their case colours. The case legend shows the pattern associated with that case's limits. Hover shows case options and plotted X/Y values with their axis names and units. Equipment appears in hover only when a panel contains multiple selected objects; boundary points identify Qmin or Qmax. Filenames, paths, metric descriptions and transforms are omitted. **Download plotted data (CSV)** retains full source provenance.
 
+The WTG P–Q and WTG Terminal Voltage tabs show violation summaries below the plots. P–Q compares each trace point with Qmin and Qmax from the same case and sweep row; voltage compares each point with the current **Min voltage** and **Max voltage** settings. The tables list only outside-limit points, grouped by case, WTG and limit, with the number of points and the worst excess. Points equal to a limit are allowed. Set minimum voltage below maximum voltage for the voltage check to run.
+
 ## Validation
 
 Open **Data validation** below the charts to review input and valid-case counts. Identical issue messages are grouped, with the number of affected files and one example filename, plus the object when relevant. PNG ZIP export is not included.
