@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-07
+
+- Raised the ZIP entry limit from 100 to 250 while retaining the 100 MiB uncompressed-size guard, allowing the supplied 181-file export.
+
 ## 2026-11-05
 
 - Omitted the initial zero-power sample at sweep index 0 from Power Factor plots and plotted-data downloads.

@@ -191,6 +191,19 @@ def test_zip_and_loose_csv_have_equivalent_parsed_channels():
     ]
 
 
+def test_zip_accepts_more_than_100_csv_files():
+    archive = BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        for index in range(101):
+            filename = f"Study{index}__V0__Filter__Q0__C0__Extra.csv"
+            zip_file.writestr(filename, _csv_bytes(filename))
+
+    expanded = expand_inputs([InputFile("many_cases.zip", "many_cases.zip", archive.getvalue(), "test")])
+
+    assert len(expanded.csv_files) == 101
+    assert not expanded.issues
+
+
 def test_duplicate_case_stems_are_excluded_with_an_error():
     first = _input()
     duplicate = InputFile(first.name, "another/" + first.name, first.content, "test")

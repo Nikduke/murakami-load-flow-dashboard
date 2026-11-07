@@ -15,7 +15,7 @@ from zipfile import BadZipFile, LargeZipFile, ZipFile
 from validation import ValidationIssue
 
 
-MAX_ARCHIVE_MEMBERS = 100
+MAX_ARCHIVE_MEMBERS = 250
 MAX_ARCHIVE_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
 
 
