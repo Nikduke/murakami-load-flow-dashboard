@@ -2,6 +2,8 @@
 
 ## 2026-11-07
 
+- Added native multi-row selection to violation tables; selected rows isolate their matching plot traces, clearing restores all filtered traces, and changing the selected case/equipment scope or violation rows resets the selection.
+- Added Equipment Loading limit-violation summaries using the displayed loading reference and plotted POC X values; removed violating-point counts from all violation tables.
 - Raised the ZIP entry limit from 100 to 250 while retaining the 100 MiB uncompressed-size guard, allowing the supplied 181-file export.
 
 ## 2026-11-05

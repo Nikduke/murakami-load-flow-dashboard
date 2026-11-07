@@ -20,7 +20,11 @@ from channel_catalogue import (
 )
 import data_loader
 from data_loader import InputFile, expand_inputs, parse_cases
-from limit_analysis import wtg_pq_limit_violations, wtg_voltage_limit_violations
+from limit_analysis import (
+    equipment_loading_limit_violations,
+    wtg_pq_limit_violations,
+    wtg_voltage_limit_violations,
+)
 from mapping import load_mapping, token_heading
 from plotting import (
     PlotOptions,
@@ -29,6 +33,7 @@ from plotting import (
     build_power_factor_figures,
     build_wtg_pq_figures,
     build_wtg_voltage_figures,
+    bundle_ranges,
     distribute_bundles,
     _legend_column_layout,
     plotted_data_csv,
@@ -172,6 +177,29 @@ def test_parser_excludes_unheaded_zeros_but_keeps_labelled_zero():
     zero = _find(case, "Real zero object", "Loading in %")
     assert zero.numeric_values == (0.0, 0.0, 0.0)
     assert any(issue.code == "blank_channel_headings" for issue in parsed.issues)
+
+
+def test_parser_treats_non_finite_values_as_missing_samples():
+    content = _csv_bytes(
+        value_overrides={"Active Power in MW": (float("nan"), float("inf"), float("-inf"))}
+    )
+
+    parsed = parse_cases([_input(content=content)])
+    case = parsed.cases[0]
+
+    assert _find(case, "WTG 1\\WTG 1", "Active Power in MW").numeric_values == (None, None, None)
+    assert any(issue.code == "non_numeric_values" for issue in parsed.issues)
+
+
+def test_bundle_ranges_include_finite_data_and_reference_lines():
+    case = parse_cases([_input()]).cases[0]
+    labels = {case.case_id: "case"}
+    plot = build_wtg_pq_figures([case], ["WTG 1\\WTG 1"], labels, options=PlotOptions())
+
+    x_range, y_range = bundle_ranges(plot.bundles, reference_y=(100.0,))
+
+    assert x_range == pytest.approx((-4.32, 4.32))
+    assert y_range == pytest.approx((-4.0, 104.0))
 
 
 def test_zip_and_loose_csv_have_equivalent_parsed_channels():
@@ -332,16 +360,16 @@ def test_wtg_pq_limit_violations_use_same_sweep_point_and_include_only_breaches(
     assert len(rows) == 2
     by_limit = {row["Limit"]: row for row in rows}
     assert by_limit["Qmin"] == {
+        "_case_id": case.case_id,
+        "_object_name": "WTG 1\\WTG 1",
         "WTG": "WTG 1",
         "Case": "Case A",
         "Limit": "Qmin",
-        "Violating points": 1,
         "P at worst point (MW)": 10.0,
         "Q (Mvar)": -4.0,
         "Limit (Mvar)": -3.0,
         "Excess (Mvar)": 1.0,
     }
-    assert by_limit["Qmax"]["Violating points"] == 1
     assert by_limit["Qmax"]["P at worst point (MW)"] == 30
     assert by_limit["Qmax"]["Q (Mvar)"] == 5
     assert by_limit["Qmax"]["Limit (Mvar)"] == 4
@@ -368,17 +396,91 @@ def test_wtg_voltage_limit_violations_use_manual_limits_and_exclude_equality():
 
     assert len(rows) == 2
     by_limit = {row["Limit"]: row for row in rows}
-    assert by_limit["Min voltage"]["Violating points"] == 1
     assert by_limit["Min voltage"]["P at worst point (MW)"] == 10
     assert by_limit["Min voltage"]["Voltage (p.u.)"] == .91
     assert by_limit["Min voltage"]["Limit (p.u.)"] == .92
     assert by_limit["Min voltage"]["Excess (p.u.)"] == pytest.approx(.01)
-    assert by_limit["Max voltage"]["Violating points"] == 1
     assert by_limit["Max voltage"]["P at worst point (MW)"] == 30
     assert by_limit["Max voltage"]["Voltage (p.u.)"] == 1.09
     assert by_limit["Max voltage"]["Limit (p.u.)"] == 1.08
     assert by_limit["Max voltage"]["Excess (p.u.)"] == pytest.approx(.01)
     assert wtg_voltage_limit_violations([case], ["WTG 1\\WTG 1"], {}, .92, .92) == []
+
+
+def test_equipment_loading_violations_use_plot_axis_and_manual_limit():
+    overrides = {
+        "Active Power Interchange in MW": (-100, -200, -300),
+        "Maximum Loading in %": (100, 111, 110),
+        "Loading in %": (100, 102, 103),
+    }
+    case = parse_cases([_input(content=_csv_bytes(value_overrides=overrides))]).cases[0]
+    rows = equipment_loading_limit_violations(
+        [case], ["Main TR_1", "Exp_Cable_1"], {case.case_id: "Case A"}, "POC1", 100
+    )
+
+    assert rows == [
+        {
+            "_case_id": case.case_id,
+            "_object_name": "Main TR_1",
+            "Equipment": "Main TR_1",
+            "Case": "Case A",
+            "X at worst point (MW)": 200.0,
+            "Loading (%)": 111.0,
+            "Limit (%)": 100,
+            "Excess (%)": 11.0,
+        },
+        {
+            "_case_id": case.case_id,
+            "_object_name": "Exp_Cable_1",
+            "Equipment": "Exp_Cable_1",
+            "Case": "Case A",
+            "X at worst point (MW)": 300.0,
+            "Loading (%)": 103.0,
+            "Limit (%)": 100,
+            "Excess (%)": 3.0,
+        },
+    ]
+    assert equipment_loading_limit_violations(
+        [case], ["Main TR_1"], {}, "POC1", 111
+    ) == []
+
+
+def test_violation_bundle_selection_rebuilds_only_matching_trace_groups():
+    object_name = "WTG 1\\WTG 1"
+    cases = [
+        parse_cases([_input("StudyA__V1__Filter__Q0__C0__Extra.csv")]).cases[0],
+        parse_cases([_input("StudyB__V2__Filter__Q0__C0__Extra.csv")]).cases[0],
+    ]
+    selected_bundle_ids = frozenset({(cases[1].case_id, object_name)})
+    labels = {case.case_id: case.case_id for case in cases}
+    options = PlotOptions(layout="2×2")
+
+    pq = build_wtg_pq_figures(
+        cases, [object_name], labels, options=options, selected_bundle_ids=selected_bundle_ids
+    )
+    assert [bundle.case.case_id for bundle in pq.bundles] == [cases[1].case_id]
+    assert len(pq.figures) == 1
+    assert len(pq.figures[0].data) == 3
+    assert {trace.legendgroup for trace in pq.figures[0].data} == {cases[1].case_id}
+
+    voltage = build_wtg_voltage_figures(
+        cases, [object_name], labels, options=options, selected_bundle_ids=selected_bundle_ids
+    )
+    assert [bundle.case.case_id for bundle in voltage.bundles] == [cases[1].case_id]
+    assert len(voltage.figures[0].data) == 1
+    assert len(voltage.figures[0].layout.shapes) == 2
+
+    loading = build_equipment_loading_figures(
+        cases,
+        ["Main TR_1"],
+        "POC1",
+        labels,
+        options=options,
+        selected_bundle_ids=frozenset({(cases[1].case_id, "Main TR_1")}),
+    )
+    assert [bundle.case.case_id for bundle in loading.bundles] == [cases[1].case_id]
+    assert len(loading.figures[0].data) == 1
+    assert sum(annotation.showarrow for annotation in loading.figures[0].layout.annotations) == 1
 
 
 def test_plot_signs_and_capability_curves_are_numeric_and_grouped():
@@ -738,14 +840,12 @@ def test_real_murakami_objects_columns_and_curve_values(murakami_cases):
     pq_violations = wtg_pq_limit_violations([case], [wtg], labels)
     assert len(pq_violations) == 1
     assert pq_violations[0]["Limit"] == "Qmax"
-    assert pq_violations[0]["Violating points"] == 41
     assert pq_violations[0]["P at worst point (MW)"] == pytest.approx(14.983335)
     assert pq_violations[0]["Excess (Mvar)"] == pytest.approx(3.546701)
 
     voltage_violations = wtg_voltage_limit_violations([case], [wtg], labels, .92, 1.08)
     assert len(voltage_violations) == 1
     assert voltage_violations[0]["Limit"] == "Max voltage"
-    assert voltage_violations[0]["Violating points"] == 9
     assert voltage_violations[0]["Voltage (p.u.)"] == pytest.approx(1.088737)
     assert voltage_violations[0]["Excess (p.u.)"] == pytest.approx(.008737)
 

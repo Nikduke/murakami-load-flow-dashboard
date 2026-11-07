@@ -1,4 +1,4 @@
-"""Summaries of WTG sweep points outside their configured limits."""
+"""Summaries of sweep samples outside configured limits."""
 
 from __future__ import annotations
 
@@ -14,38 +14,41 @@ ViolationRow = dict[str, str | int | float]
 
 def _breach_summary(
     samples: Iterable[tuple[float | None, float | None, float | None]], *, lower: bool
-) -> tuple[int, tuple[float, float, float, float]] | None:
-    count = 0
+) -> tuple[float, float, float, float] | None:
     worst: tuple[float, float, float, float] | None = None
-    for power, value, limit in samples:
-        if power is None or value is None or limit is None:
+    for location, value, limit in samples:
+        if location is None or value is None or limit is None:
             continue
-        if not all(math.isfinite(item) for item in (power, value, limit)):
+        if not all(math.isfinite(item) for item in (location, value, limit)):
             continue
         excess = limit - value if lower else value - limit
         if excess <= 0:
             continue
-        count += 1
         if worst is None or excess > worst[3]:
-            worst = power, value, limit, excess
-    return (count, worst) if worst is not None else None
+            worst = location, value, limit, excess
+    return worst
 
 
-def _row_prefix(case: CaseData, object_name: str, labels: dict[str, str]) -> dict[str, str]:
+def _row_prefix(
+    case: CaseData, object_name: str, labels: dict[str, str], element_column: str = "WTG"
+) -> dict[str, str]:
     return {
-        "WTG": object_name.replace("\\", "/").rsplit("/", 1)[-1],
+        "_case_id": case.case_id,
+        "_object_name": object_name,
+        element_column: object_name.replace("\\", "/").rsplit("/", 1)[-1],
         "Case": labels.get(case.case_id, case.case_id),
     }
 
 
-def _sort_rows(rows: list[ViolationRow], excess_column: str) -> list[ViolationRow]:
+def _sort_rows(
+    rows: list[ViolationRow], excess_column: str, element_column: str = "WTG"
+) -> list[ViolationRow]:
     rows.sort(
         key=lambda row: (
             -float(row[excess_column]),
-            -int(row["Violating points"]),
-            str(row["WTG"]).casefold(),
+            str(row[element_column]).casefold(),
             str(row["Case"]).casefold(),
-            str(row["Limit"]).casefold(),
+            str(row.get("Limit", "")).casefold(),
         )
     )
     return rows
@@ -71,12 +74,11 @@ def wtg_pq_limit_violations(
                 )
                 if result is None:
                     continue
-                count, (active_power, q_value, q_limit, excess) = result
+                active_power, q_value, q_limit, excess = result
                 rows.append(
                     {
                         **_row_prefix(case, object_name, labels),
                         "Limit": label,
-                        "Violating points": count,
                         "P at worst point (MW)": active_power,
                         "Q (Mvar)": q_value,
                         "Limit (Mvar)": q_limit,
@@ -114,12 +116,11 @@ def wtg_voltage_limit_violations(
                 )
                 if result is None:
                     continue
-                count, (active_power, measured_voltage, voltage_limit, excess) = result
+                active_power, measured_voltage, voltage_limit, excess = result
                 rows.append(
                     {
                         **_row_prefix(case, object_name, labels),
                         "Limit": label,
-                        "Violating points": count,
                         "P at worst point (MW)": active_power,
                         "Voltage (p.u.)": measured_voltage,
                         "Limit (p.u.)": voltage_limit,
@@ -127,3 +128,42 @@ def wtg_voltage_limit_violations(
                     }
                 )
     return _sort_rows(rows, "Excess (p.u.)")
+
+
+def equipment_loading_limit_violations(
+    cases: Sequence[CaseData],
+    selected_objects: Sequence[str],
+    labels: dict[str, str],
+    x_source: str,
+    loading_reference: float,
+) -> list[ViolationRow]:
+    """Report selected equipment-loading samples above the displayed reference."""
+    rows: list[ViolationRow] = []
+    for case in cases:
+        interchange = resolve_channel(case, x_source, "active_interchange").channel
+        if interchange is None:
+            continue
+        for object_name in selected_objects:
+            loading = resolve_channel(case, object_name, "loading").channel
+            if loading is None:
+                continue
+            result = _breach_summary(
+                (
+                    (-value if value is not None else None, load, loading_reference)
+                    for value, load in zip(interchange.numeric_values, loading.numeric_values)
+                ),
+                lower=False,
+            )
+            if result is None:
+                continue
+            x_value, measured_loading, limit, excess = result
+            rows.append(
+                {
+                    **_row_prefix(case, object_name, labels, "Equipment"),
+                    "X at worst point (MW)": x_value,
+                    "Loading (%)": measured_loading,
+                    "Limit (%)": limit,
+                    "Excess (%)": excess,
+                }
+            )
+    return _sort_rows(rows, "Excess (%)", "Equipment")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Callable, Sequence
 
@@ -19,14 +20,18 @@ from channel_catalogue import (
 )
 from data_loader import (
     CaseData,
-    ExpandedInputs,
     InputFile,
     ParseResult,
     discover_local_inputs,
     expand_inputs,
+    is_mapping_filename,
     parse_cases,
 )
-from limit_analysis import wtg_pq_limit_violations, wtg_voltage_limit_violations
+from limit_analysis import (
+    equipment_loading_limit_violations,
+    wtg_pq_limit_violations,
+    wtg_voltage_limit_violations,
+)
 from mapping import MappingResult, load_mapping, token_heading
 from plotting import (
     PlotOptions,
@@ -48,7 +53,8 @@ APP_LOGO_PATH = APP_DIR / "assets" / "mpe_app_wordmark.png"
 TAB_NAMES = ("WTG P–Q", "WTG Terminal Voltage", "Equipment Loading", "POC P–Q", "Power Factor")
 LAYOUTS = ("1 plot", "1×2", "2×2")
 CASE_FILTER_DEFAULTS_VERSION = 2
-PLOT_CACHE_VERSION = 22
+PLOT_CACHE_VERSION = 23
+VIOLATION_CACHE_VERSION = 1
 _PLOT_WIDTH_SENSOR = st.components.v2.component(
     "murakami_plot_width_sensor",
     html='<div id="plot-width-sensor" aria-hidden="true"></div>',
@@ -102,13 +108,21 @@ class ObjectCatalogue:
     power_factor: tuple[str, ...]
 
 
-@st.cache_resource(show_spinner=False, max_entries=4, scope="session")
+@dataclass(frozen=True)
+class ParsedSources:
+    parsed: ParseResult
+    mapping_files: tuple[InputFile, ...]
+    issues: tuple[ValidationIssue, ...]
+    csv_count: int
+
+
+@st.cache_resource(show_spinner=False, max_entries=1, scope="session")
 def _cached_local_inputs(input_dir: Path, signature: tuple[tuple[str, int, int], ...]) -> tuple[InputFile, ...]:
     del signature
     return discover_local_inputs(input_dir)
 
 
-@st.cache_resource(show_spinner=False, max_entries=2, scope="session")
+@st.cache_resource(show_spinner=False, max_entries=1, scope="session")
 def _cached_upload_inputs(
     signature: tuple[tuple[str, str, int], ...], _uploads: tuple
 ) -> tuple[InputFile, ...]:
@@ -124,15 +138,19 @@ def _cached_upload_inputs(
     )
 
 
-@st.cache_resource(show_spinner="Reading CSV results…", max_entries=4, scope="session")
-def _cached_parse(signature: tuple[tuple[str, str, str], ...], _files: tuple[InputFile, ...]) -> tuple[ExpandedInputs, ParseResult]:
+@st.cache_resource(show_spinner="Reading CSV results…", max_entries=1, scope="session")
+def _cached_parse(signature: tuple[tuple[str, str, str], ...], _files: tuple[InputFile, ...]) -> ParsedSources:
     del signature
     expanded = expand_inputs(_files)
-    parsed = parse_cases(expanded.csv_files)
-    return expanded, parsed
+    return ParsedSources(
+        parsed=parse_cases(expanded.csv_files),
+        mapping_files=expanded.mapping_files,
+        issues=expanded.issues,
+        csv_count=len(expanded.csv_files),
+    )
 
 
-@st.cache_resource(show_spinner=False, max_entries=4, scope="session")
+@st.cache_resource(show_spinner=False, max_entries=2, scope="session")
 def _cached_object_catalogue(signature: tuple[tuple[str, str, str], ...], _cases: tuple[CaseData, ...]) -> ObjectCatalogue:
     del signature
     wtg = discover_wtg_objects(_cases)
@@ -157,7 +175,7 @@ def _cached_object_catalogue(signature: tuple[tuple[str, str, str], ...], _cases
     )
 
 
-@st.cache_resource(show_spinner=False, max_entries=8, scope="session")
+@st.cache_resource(show_spinner=False, max_entries=5, scope="session")
 def _cached_plot_set(
     signature: tuple[object, ...],
     _builder: Callable[..., PlotSet],
@@ -168,9 +186,21 @@ def _cached_plot_set(
 
 
 @st.cache_data(show_spinner=False, max_entries=16, scope="session")
-def _cached_mapping(signature: str, _source: InputFile) -> MappingResult:
+def _cached_mapping(signature: tuple[str, str, str], _source: InputFile) -> MappingResult:
     del signature
     return load_mapping(_source)
+
+
+@st.cache_data(show_spinner=False, max_entries=32, scope="session")
+def _cached_violation_rows(
+    signature: tuple[object, ...],
+    _builder: Callable[..., Sequence[dict[str, str | int | float]]],
+    _cases: tuple[CaseData, ...],
+    _selected_objects: tuple[str, ...],
+    _labels: dict[str, str],
+    _parameters: tuple[object, ...],
+) -> tuple[dict[str, str | int | float], ...]:
+    return tuple(_builder(_cases, _selected_objects, _labels, *_parameters))
 
 
 def _local_stat_signature(input_dir: Path) -> tuple[tuple[str, int, int], ...]:
@@ -191,6 +221,27 @@ def _source_signature(files: Sequence[InputFile]) -> tuple[tuple[str, str, str],
     return tuple(sorted((source.origin, source.source_path, source.digest) for source in files))
 
 
+def _violation_cache_signature(
+    tab_id: str,
+    cases: Sequence[CaseData],
+    selected_objects: Sequence[str],
+    labels: dict[str, str],
+    parameters: tuple[object, ...] = (),
+) -> tuple[object, ...]:
+    return (
+        VIOLATION_CACHE_VERSION,
+        tab_id,
+        tuple((case.case_id, case.source_path, case.sha256) for case in cases),
+        tuple(selected_objects),
+        tuple(sorted(labels.items())),
+        parameters,
+    )
+
+
+def _mapping_signature(source: InputFile) -> tuple[str, str, str]:
+    return source.origin, source.source_path, source.digest
+
+
 def _issue_for_mapping(source: InputFile, message: str, code: str) -> ValidationIssue:
     return ValidationIssue("error", code, message, source.source_path)
 
@@ -205,7 +256,7 @@ def _select_mapping(
     if len(candidates) == 1:
         st.session_state.pop("mapping_choice", None)
         source = candidates[0]
-        return source, _cached_mapping(source.digest, source), ()
+        return source, _cached_mapping(_mapping_signature(source), source), ()
 
     keys = {
         f"{source.origin}|{source.source_path}|{source.digest}": source
@@ -238,7 +289,7 @@ def _select_mapping(
             ),
         )
     source = keys[selected_key]
-    result = _cached_mapping(source.digest, source)
+    result = _cached_mapping(_mapping_signature(source), source)
     return source, result, ()
 
 
@@ -424,8 +475,40 @@ def _measure_plot_panel(tab_id: str, layout: str) -> None:
     )
 
 
-def _render_violation_table(
+def _selected_violation_bundle_ids(
+    selection_key: str | None,
+    rows: Sequence[dict[str, str | int | float]],
+) -> frozenset[tuple[str, str]] | None:
+    if selection_key is None:
+        return None
+    state = st.session_state.get(selection_key, {})
+    selection = state.get("selection", {}) if isinstance(state, dict) else {}
+    selected_rows = selection.get("rows", ()) if isinstance(selection, dict) else ()
+    bundle_ids = frozenset(
+        (rows[index]["_case_id"], rows[index]["_object_name"])
+        for index in selected_rows
+        if isinstance(index, int) and 0 <= index < len(rows)
+    )
+    return bundle_ids or None
+
+
+def _violation_table_key(
     tab_id: str,
+    rows: Sequence[dict[str, str | int | float]],
+    cases: Sequence[CaseData],
+    selected_objects: Sequence[str],
+) -> str:
+    signature = (
+        tuple((case.case_id, case.source_path, case.sha256) for case in cases),
+        tuple(selected_objects),
+        tuple(tuple((column, row[column]) for column in sorted(row)) for row in rows),
+    )
+    digest = sha256(repr(signature).encode("utf-8")).hexdigest()[:12]
+    return f"{tab_id}_limit_violations_{digest}"
+
+
+def _render_violation_table(
+    selection_key: str,
     title: str,
     rows: Sequence[dict[str, str | int | float]],
     empty_message: str,
@@ -436,21 +519,27 @@ def _render_violation_table(
         return
 
     number_formats = {
-        "Violating points": "%d",
         "P at worst point (MW)": "%.3f",
+        "X at worst point (MW)": "%.3f",
         "Q (Mvar)": "%.3f",
         "Limit (Mvar)": "%.3f",
         "Excess (Mvar)": "%.3f",
         "Voltage (p.u.)": "%.4f",
         "Limit (p.u.)": "%.4f",
         "Excess (p.u.)": "%.4f",
+        "Loading (%)": "%.3f",
+        "Limit (%)": "%.3f",
+        "Excess (%)": "%.3f",
     }
     st.dataframe(
         rows,
         hide_index=True,
         width="stretch",
         height=min(42 + 36 * min(len(rows), 8), 330),
-        key=f"{tab_id}_limit_violations",
+        key=selection_key,
+        on_select="rerun",
+        selection_mode="multi-row",
+        column_order=tuple(column for column in rows[0] if not column.startswith("_")),
         column_config={
             column: st.column_config.NumberColumn(format=format_string)
             for column, format_string in number_formats.items()
@@ -468,6 +557,7 @@ def _render_plotset(
     violation_heading: str | None = None,
     violation_rows: Sequence[dict[str, str | int | float]] | None = None,
     violation_empty_message: str = "",
+    violation_table_key: str | None = None,
 ) -> None:
     if not cases:
         st.info("No cases match the current filters. Select more values or click All cases in the sidebar.")
@@ -500,7 +590,7 @@ def _render_plotset(
 
     if violation_heading is not None:
         _render_violation_table(
-            tab_id,
+            violation_table_key or f"{tab_id}_limit_violations",
             violation_heading,
             violation_rows or (),
             violation_empty_message,
@@ -649,6 +739,58 @@ def _render_tabs(
         options = PlotOptions(layout=layout, panel_width=_plot_panel_width(tab_id, layout))
 
         labels = _case_label_map(label_cases)
+        violation_heading = None
+        violation_rows = None
+        violation_empty_message = ""
+        if active_index == 0:
+            violation_heading = "WTG P–Q limit violations"
+            violation_rows = _cached_violation_rows(
+                _violation_cache_signature("wtg_pq", cases, selected, labels),
+                wtg_pq_limit_violations,
+                tuple(cases),
+                tuple(selected),
+                labels,
+                (),
+            )
+            violation_empty_message = "No selected WTG P–Q points fall outside the available Qmin/Qmax limits."
+        elif active_index == 1:
+            violation_heading = "WTG terminal-voltage limit violations"
+            parameters = (float(low), float(high))
+            violation_rows = _cached_violation_rows(
+                _violation_cache_signature("wtg_voltage", cases, selected, labels, parameters),
+                wtg_voltage_limit_violations,
+                tuple(cases),
+                tuple(selected),
+                labels,
+                parameters,
+            )
+            violation_empty_message = (
+                "Set the minimum below the maximum to check for voltage limit violations."
+                if low >= high
+                else "No selected terminal-voltage points fall outside the current min/max limits."
+            )
+        elif active_index == 2:
+            violation_heading = "Equipment loading limit violations"
+            parameters = (x_source, float(reference))
+            violation_rows = _cached_violation_rows(
+                _violation_cache_signature("equipment_loading", cases, selected, labels, parameters),
+                equipment_loading_limit_violations,
+                tuple(cases),
+                tuple(selected),
+                labels,
+                parameters,
+            )
+            violation_empty_message = (
+                f"No selected equipment-loading samples exceed the current {reference:g}% limit."
+            )
+        violation_table_key = (
+            _violation_table_key(tab_id, violation_rows, cases, selected)
+            if violation_heading is not None and violation_rows
+            else None
+        )
+        selected_bundle_ids = _selected_violation_bundle_ids(
+            violation_table_key, violation_rows or ()
+        )
 
         if not cases:
             result = PlotSet((), (), (), ())
@@ -657,18 +799,26 @@ def _render_tabs(
             build_args: tuple = (cases, selected, labels)
             if active_index == 0:
                 builder = build_wtg_pq_figures
-                build_kwargs.update(show_qmin=show_qmin, show_qmax=show_qmax)
+                build_kwargs.update(
+                    show_qmin=show_qmin,
+                    show_qmax=show_qmax,
+                    selected_bundle_ids=selected_bundle_ids,
+                )
             elif active_index == 1:
                 builder = build_wtg_voltage_figures
                 build_kwargs.update(
                     show_references=low < high,
                     low_reference=float(low),
                     high_reference=float(high),
+                    selected_bundle_ids=selected_bundle_ids,
                 )
             elif active_index == 2:
                 builder = build_equipment_loading_figures
                 build_args = (cases, selected, x_source, labels)
-                build_kwargs.update(loading_reference=float(reference))
+                build_kwargs.update(
+                    loading_reference=float(reference),
+                    selected_bundle_ids=selected_bundle_ids,
+                )
             elif active_index == 3:
                 builder = build_poc_pq_figures
             else:
@@ -690,23 +840,6 @@ def _render_tabs(
                     build_kwargs,
                 )
         issues.extend(result.issues)
-        violation_heading = None
-        violation_rows = None
-        violation_empty_message = ""
-        if active_index == 0:
-            violation_heading = "WTG P–Q limit violations"
-            violation_rows = wtg_pq_limit_violations(cases, selected, labels)
-            violation_empty_message = "No selected WTG P–Q points fall outside the available Qmin/Qmax limits."
-        elif active_index == 1:
-            violation_heading = "WTG terminal-voltage limit violations"
-            violation_rows = wtg_voltage_limit_violations(
-                cases, selected, labels, float(low), float(high)
-            )
-            violation_empty_message = (
-                "Set the minimum below the maximum to check for voltage limit violations."
-                if low >= high
-                else "No selected terminal-voltage points fall outside the current min/max limits."
-            )
         _render_plotset(
             tab_id,
             result,
@@ -715,6 +848,7 @@ def _render_tabs(
             violation_heading=violation_heading,
             violation_rows=violation_rows,
             violation_empty_message=violation_empty_message,
+            violation_table_key=violation_table_key,
         )
 
     return tuple(issues)
@@ -790,13 +924,23 @@ def main() -> None:
     )
     uploaded_files = _cached_upload_inputs(upload_signature, tuple(uploaded_values))
     source_files = tuple(local_files) + uploaded_files
-    source_signature = _source_signature(source_files)
+    mapping_sources = tuple(
+        source
+        for source in source_files
+        if Path(source.name).suffix.casefold() == ".xlsx" and is_mapping_filename(source.name)
+    )
+    result_sources = tuple(
+        source for source in source_files if Path(source.name).suffix.casefold() != ".xlsx"
+    )
+    source_signature = _source_signature(result_sources)
     with st.spinner("Indexing result sources…"):
-        expanded, parsed = _cached_parse(source_signature, source_files)
+        loaded = _cached_parse(source_signature, result_sources)
+    parsed = loaded.parsed
     catalogue = _cached_object_catalogue(source_signature, parsed.cases)
 
     with st.sidebar:
-        _, mapping_result, mapping_selection_issues = _select_mapping(expanded.mapping_files)
+        all_mapping_sources = (*loaded.mapping_files, *mapping_sources)
+        _, mapping_result, mapping_selection_issues = _select_mapping(all_mapping_sources)
         if parsed.cases:
             st.markdown("**Cases**")
             st.button("All cases", key="all_cases", on_click=_select_all_cases, width="stretch")
@@ -812,7 +956,7 @@ def main() -> None:
         plot_issues = _render_tabs(selected_cases, catalogue, parsed.cases)
 
     all_issues = [
-        *expanded.issues,
+        *loaded.issues,
         *parsed.issues,
         *mapping_selection_issues,
         *mapping_result.issues,
@@ -832,7 +976,7 @@ def main() -> None:
     )
     with st.expander(validation_title, expanded=errors > 0):
         st.caption(
-            f"{len(parsed.cases):,} valid cases from {len(expanded.csv_files):,} CSVs · "
+            f"{len(parsed.cases):,} valid cases from {loaded.csv_count:,} CSVs · "
             f"{len(local_files):,} local inputs · {len(uploaded_files):,} uploaded inputs"
         )
         if grouped_issues:

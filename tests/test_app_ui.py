@@ -25,6 +25,27 @@ def _uploaded_violation_csv() -> bytes:
     rows = list(csv.reader(StringIO(_uploaded_chart_csv().decode("utf-8"))))
     rows[2][1:6] = ["10", "-0.6", "0.91", "-0.5", "0.5"]
     rows[3][1:6] = ["20", "0.7", "1.09", "-0.5", "0.5"]
+    rows[2][11] = "120"
+    rows[3][11] = "105"
+    content = StringIO(newline="")
+    csv.writer(content).writerows(rows)
+    return content.getvalue().encode("utf-8")
+
+
+def _uploaded_multi_wtg_violation_csv() -> bytes:
+    rows = list(csv.reader(StringIO(_uploaded_violation_csv().decode("utf-8"))))
+    rows[0].extend([r"WTG 23\WTG 23"] * 5)
+    rows[1].extend(
+        [
+            "Active Power in MW",
+            "Reactive Power in Mvar",
+            "Voltage, Magnitude in p.u.",
+            "Lower limit of reactive power in Mvar",
+            "Upper limit of reactive power in Mvar",
+        ]
+    )
+    rows[2].extend(["10", "-0.6", "0.91", "-0.5", "0.5"])
+    rows[3].extend(["20", "0.7", "1.09", "-0.5", "0.5"])
     content = StringIO(newline="")
     csv.writer(content).writerows(rows)
     return content.getvalue().encode("utf-8")
@@ -92,7 +113,7 @@ def test_wtg_tabs_show_case_limit_violations_below_the_plots():
     assert any(item.value == "WTG P–Q limit violations" for item in app.subheader)
     pq_rows = app.dataframe[0].value
     assert set(pq_rows["Limit"]) == {"Qmin", "Qmax"}
-    assert pq_rows["Violating points"].tolist() == [1, 1]
+    assert "Violating points" not in pq_rows.columns
     assert set(pq_rows["Case"]) == {"StudyA · V1"}
 
     app.checkbox(key="pq_show_qmax").set_value(False).run()
@@ -106,8 +127,106 @@ def test_wtg_tabs_show_case_limit_violations_below_the_plots():
     assert any(item.value == "WTG terminal-voltage limit violations" for item in app.subheader)
     voltage_rows = app.dataframe[0].value
     assert set(voltage_rows["Limit"]) == {"Min voltage", "Max voltage"}
-    assert voltage_rows["Violating points"].tolist() == [1, 1]
+    assert "Violating points" not in voltage_rows.columns
     assert set(voltage_rows["Case"]) == {"StudyA · V1"}
+
+    app.session_state["plot_tabs"] = "Equipment Loading"
+    app.run()
+
+    assert not app.exception
+    assert any(item.value == "Equipment loading limit violations" for item in app.subheader)
+    loading_rows = app.dataframe[0].value
+    assert "Violating points" not in loading_rows.columns
+    assert loading_rows.iloc[0]["Equipment"] == "Exp_Cable_1"
+    assert loading_rows.iloc[0]["X at worst point (MW)"] == -100.0
+    assert loading_rows.iloc[0]["Loading (%)"] == 120.0
+    assert loading_rows.iloc[0]["Limit (%)"] == 100.0
+    assert loading_rows.iloc[0]["Excess (%)"] == 20.0
+
+
+def test_violation_table_selection_filters_and_restores_plot_traces():
+    archive = BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("StudyA__V1.csv", _uploaded_violation_csv())
+        zip_file.writestr("StudyB__V2.csv", _uploaded_violation_csv())
+
+    app = AppTest.from_string(_app_test_script(), default_timeout=45).run()
+    app.sidebar.file_uploader[0].set_value(("Study.zip", archive.getvalue(), "application/zip")).run()
+    app.button(key="all_cases").click().run()
+
+    pq_rows = app.dataframe[0].value
+    row_a = next(index for index, row in pq_rows.iterrows() if row["Case"] == "StudyA · V1")
+    row_b = next(index for index, row in pq_rows.iterrows() if row["Case"] == "StudyB · V2")
+    selection_key = app.dataframe[0].key
+
+    app.session_state[selection_key] = {"selection": {"rows": [int(row_b)]}}
+    app.run()
+    assert not app.exception
+    figure = json.loads(app.get("plotly_chart")[0].proto.spec)
+    assert len(figure["data"]) == 3
+    assert {trace["legendgroup"] for trace in figure["data"]} == {"StudyB__V2"}
+
+    app.session_state[selection_key] = {"selection": {"rows": [int(row_a), int(row_b)]}}
+    app.run()
+    assert not app.exception
+    figure = json.loads(app.get("plotly_chart")[0].proto.spec)
+    assert len(figure["data"]) == 6
+    assert {trace["legendgroup"] for trace in figure["data"]} == {"StudyA__V1", "StudyB__V2"}
+
+    app.session_state[selection_key] = {"selection": {"rows": []}}
+    app.run()
+    assert not app.exception
+    figure = json.loads(app.get("plotly_chart")[0].proto.spec)
+    assert len(figure["data"]) == 6
+
+
+def test_violation_selection_clears_when_wtg_scope_changes():
+    app = AppTest.from_string(_app_test_script(), default_timeout=45).run()
+    app.sidebar.file_uploader[0].set_value(
+        ("Study.csv", _uploaded_multi_wtg_violation_csv(), "text/csv")
+    ).run()
+
+    first_table_key = app.dataframe[0].key
+    app.session_state[first_table_key] = {"selection": {"rows": [0]}}
+    app.run()
+    figure = json.loads(app.get("plotly_chart")[0].proto.spec)
+    assert {trace["meta"][1] for trace in figure["data"]} == {r"WTG 1\WTG 1"}
+
+    app.session_state["pq_objects"] = [r"WTG 23\WTG 23"]
+    app.run()
+    assert not app.exception
+    assert app.dataframe[0].key != first_table_key
+    assert app.dataframe[0].value is not None
+    assert app.dataframe[0].value.iloc[0]["WTG"] == "WTG 23"
+    selection = app.session_state[app.dataframe[0].key]["selection"]["rows"]
+    assert selection == []
+    figure = json.loads(app.get("plotly_chart")[0].proto.spec)
+    assert {trace["meta"][1] for trace in figure["data"]} == {r"WTG 23\WTG 23"}
+
+
+def test_violation_selection_clears_when_case_options_change_but_rows_do_not():
+    archive = BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("StudyA__V1.csv", _uploaded_violation_csv())
+        zip_file.writestr("StudyB__V2.csv", _uploaded_chart_csv())
+
+    app = AppTest.from_string(_app_test_script(), default_timeout=45).run()
+    app.sidebar.file_uploader[0].set_value(("Study.zip", archive.getvalue(), "application/zip")).run()
+    assert "1 of 2 cases selected" in [item.value for item in app.caption]
+    assert set(app.dataframe[0].value["Case"]) == {"StudyA · V1"}
+
+    first_table_key = app.dataframe[0].key
+    app.session_state[first_table_key] = {"selection": {"rows": [0]}}
+    app.run()
+    figure = json.loads(app.get("plotly_chart")[0].proto.spec)
+    assert {trace["legendgroup"] for trace in figure["data"]} == {"StudyA__V1"}
+
+    app.button(key="all_cases").click().run()
+    assert app.dataframe[0].key != first_table_key
+    assert set(app.dataframe[0].value["Case"]) == {"StudyA · V1"}
+    assert app.session_state[app.dataframe[0].key]["selection"]["rows"] == []
+    figure = json.loads(app.get("plotly_chart")[0].proto.spec)
+    assert {trace["legendgroup"] for trace in figure["data"]} == {"StudyA__V1", "StudyB__V2"}
 
 
 def test_uploaded_csv_values_are_rendered_correctly_on_all_five_tabs():
@@ -421,3 +540,68 @@ def test_validation_summary_groups_repeated_messages_by_source():
     assert len(grouped) == 1
     assert grouped[0][0].message == "Blank columns ignored"
     assert grouped[0][1] == 2
+
+
+def test_cached_violation_rows_reuses_same_scope_summary():
+    app = AppTest.from_string(
+        """
+import streamlit as st
+import app
+
+calls = []
+def build_rows(cases, selected_objects, labels, threshold):
+    calls.append(1)
+    return [{"Case": str(threshold)}]
+
+first = app._cached_violation_rows(("cache-test", 42), build_rows, (), (), {}, (42,))
+second = app._cached_violation_rows(("cache-test", 42), build_rows, (), (), {}, (42,))
+st.session_state["cache_test_result"] = (first == second, len(calls))
+"""
+    ).run()
+
+    assert not app.exception
+    assert app.session_state["cache_test_result"] == (True, 1)
+
+
+def test_mapping_cache_identity_includes_source_path():
+    app = AppTest.from_string(
+        """
+import streamlit as st
+import app
+from data_loader import InputFile
+
+first_source = InputFile("Mapping.xlsx", "first/Mapping.xlsx", b"not a workbook", "test")
+second_source = InputFile("Mapping.xlsx", "second/Mapping.xlsx", b"not a workbook", "test")
+first = app._cached_mapping(app._mapping_signature(first_source), first_source)
+second = app._cached_mapping(app._mapping_signature(second_source), second_source)
+st.session_state["mapping_source_paths"] = (
+    first.issues[0].source_path,
+    second.issues[0].source_path,
+)
+"""
+    ).run()
+
+    assert not app.exception
+    assert app.session_state["mapping_source_paths"] == (
+        "first/Mapping.xlsx",
+        "second/Mapping.xlsx",
+    )
+
+
+def test_violation_selection_key_changes_when_summary_values_change():
+    from app import _violation_table_key
+
+    row = {
+        "_case_id": "Study",
+        "_object_name": "WTG 1",
+        "Case": "Study",
+        "Limit": "Qmax",
+        "Excess (Mvar)": 0.2,
+    }
+
+    first_key = _violation_table_key("wtg_pq", [row], (), ["WTG 1"])
+    changed_key = _violation_table_key(
+        "wtg_pq", [{**row, "Excess (Mvar)": 0.3}], (), ["WTG 1"]
+    )
+
+    assert first_key != changed_key

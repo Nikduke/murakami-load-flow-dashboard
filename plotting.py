@@ -6,6 +6,7 @@ import csv
 from dataclasses import dataclass
 from html import escape
 from io import StringIO
+from itertools import chain
 import math
 import re
 from typing import Iterable, Sequence
@@ -220,6 +221,7 @@ def build_wtg_pq_bundles(
     labels: dict[str, str],
     show_qmin: bool = True,
     show_qmax: bool = True,
+    selected_bundle_ids: frozenset[tuple[str, str]] | None = None,
 ) -> tuple[tuple[CurveBundle, ...], tuple[ValidationIssue, ...]]:
     bundles: list[CurveBundle] = []
     issues: list[ValidationIssue] = []
@@ -228,9 +230,14 @@ def build_wtg_pq_bundles(
         case.case_id: CASE_LINE_STYLES[index % len(CASE_LINE_STYLES)]
         for index, case in enumerate(ordered_cases)
     }
+    selected_case_ids = {case_id for case_id, _ in selected_bundle_ids} if selected_bundle_ids is not None else None
     for case in ordered_cases:
+        if selected_case_ids is not None and case.case_id not in selected_case_ids:
+            continue
         case_line_style = case_line_styles[case.case_id]
         for object_name in sorted(selected_objects, key=natural_key):
+            if selected_bundle_ids is not None and (case.case_id, object_name) not in selected_bundle_ids:
+                continue
             p_channel = _resolved(case, object_name, "active_power", issues)
             q_channel = _resolved(case, object_name, "reactive_power", issues)
             if p_channel is None or q_channel is None:
@@ -281,12 +288,20 @@ def build_wtg_pq_bundles(
 
 
 def build_wtg_voltage_bundles(
-    cases: Sequence[CaseData], selected_objects: Sequence[str], labels: dict[str, str]
+    cases: Sequence[CaseData],
+    selected_objects: Sequence[str],
+    labels: dict[str, str],
+    selected_bundle_ids: frozenset[tuple[str, str]] | None = None,
 ) -> tuple[tuple[CurveBundle, ...], tuple[ValidationIssue, ...]]:
     bundles: list[CurveBundle] = []
     issues: list[ValidationIssue] = []
+    selected_case_ids = {case_id for case_id, _ in selected_bundle_ids} if selected_bundle_ids is not None else None
     for case in sorted(cases, key=case_sort_key):
+        if selected_case_ids is not None and case.case_id not in selected_case_ids:
+            continue
         for object_name in sorted(selected_objects, key=natural_key):
+            if selected_bundle_ids is not None and (case.case_id, object_name) not in selected_bundle_ids:
+                continue
             p_channel = _resolved(case, object_name, "active_power", issues)
             u_channel = _resolved(case, object_name, "voltage", issues)
             if p_channel is None or u_channel is None:
@@ -311,14 +326,20 @@ def build_loading_bundles(
     selected_objects: Sequence[str],
     x_source: str,
     labels: dict[str, str],
+    selected_bundle_ids: frozenset[tuple[str, str]] | None = None,
 ) -> tuple[tuple[CurveBundle, ...], tuple[ValidationIssue, ...]]:
     bundles: list[CurveBundle] = []
     issues: list[ValidationIssue] = []
+    selected_case_ids = {case_id for case_id, _ in selected_bundle_ids} if selected_bundle_ids is not None else None
     for case in sorted(cases, key=case_sort_key):
+        if selected_case_ids is not None and case.case_id not in selected_case_ids:
+            continue
         x_channel = _resolved(case, x_source, "active_interchange", issues)
         if x_channel is None:
             continue
         for object_name in sorted(selected_objects, key=natural_key):
+            if selected_bundle_ids is not None and (case.case_id, object_name) not in selected_bundle_ids:
+                continue
             y_channel = _resolved(case, object_name, "loading", issues)
             if y_channel is None:
                 continue
@@ -501,14 +522,26 @@ def distribute_bundles(
     return tuple(tuple(panel) for panel in panels if panel)
 
 
-def _finite(values: Iterable[float | None]) -> list[float]:
-    return [float(value) for value in values if value is not None and math.isfinite(float(value))]
+def _finite(values: Iterable[float | None]) -> Iterable[float]:
+    for value in values:
+        if value is None:
+            continue
+        number = float(value)
+        if math.isfinite(number):
+            yield number
 
 
-def _expanded_range(values: Sequence[float], fraction: float = 0.04) -> tuple[float, float] | None:
-    if not values:
+def _expanded_range(values: Iterable[float], fraction: float = 0.04) -> tuple[float, float] | None:
+    iterator = iter(values)
+    try:
+        low = high = next(iterator)
+    except StopIteration:
         return None
-    low, high = min(values), max(values)
+    for value in iterator:
+        if value < low:
+            low = value
+        elif value > high:
+            high = value
     span = high - low
     pad = span * fraction if span else max(abs(high) * fraction, 0.5)
     return low - pad, high + pad
@@ -517,13 +550,15 @@ def _expanded_range(values: Sequence[float], fraction: float = 0.04) -> tuple[fl
 def bundle_ranges(
     bundles: Sequence[CurveBundle], reference_y: Sequence[float] = ()
 ) -> tuple[tuple[float, float] | None, tuple[float, float] | None]:
-    xs: list[float] = []
-    ys: list[float] = list(reference_y)
-    for bundle in bundles:
-        for curve in bundle.curves:
-            xs.extend(_finite(curve.x_values))
-            ys.extend(_finite(curve.y_values))
-    return _expanded_range(xs), _expanded_range(ys)
+    def values(axis: str) -> Iterable[float | None]:
+        for bundle in bundles:
+            for curve in bundle.curves:
+                yield from getattr(curve, axis)
+
+    return (
+        _expanded_range(_finite(values("x_values"))),
+        _expanded_range(_finite(chain(reference_y, values("y_values")))),
+    )
 
 
 def build_plot_set(
@@ -706,8 +741,11 @@ def build_wtg_pq_figures(
     options: PlotOptions,
     show_qmin: bool = True,
     show_qmax: bool = True,
+    selected_bundle_ids: frozenset[tuple[str, str]] | None = None,
 ) -> PlotSet:
-    bundles, issues = build_wtg_pq_bundles(cases, selected_objects, labels, show_qmin, show_qmax)
+    bundles, issues = build_wtg_pq_bundles(
+        cases, selected_objects, labels, show_qmin, show_qmax, selected_bundle_ids
+    )
     result = build_plot_set(
         bundles,
         title="WTG P–Q",
@@ -727,8 +765,9 @@ def build_wtg_voltage_figures(
     show_references: bool = True,
     low_reference: float = 0.92,
     high_reference: float = 1.08,
+    selected_bundle_ids: frozenset[tuple[str, str]] | None = None,
 ) -> PlotSet:
-    bundles, issues = build_wtg_voltage_bundles(cases, selected_objects, labels)
+    bundles, issues = build_wtg_voltage_bundles(cases, selected_objects, labels, selected_bundle_ids)
     references = ((low_reference, f"Min = {low_reference:.2f} p.u."),
                   (high_reference, f"Max = {high_reference:.2f} p.u.")) if show_references else ()
     result = build_plot_set(
@@ -750,8 +789,11 @@ def build_equipment_loading_figures(
     *,
     options: PlotOptions,
     loading_reference: float = 100.0,
+    selected_bundle_ids: frozenset[tuple[str, str]] | None = None,
 ) -> PlotSet:
-    bundles, issues = build_loading_bundles(cases, selected_objects, x_source, labels)
+    bundles, issues = build_loading_bundles(
+        cases, selected_objects, x_source, labels, selected_bundle_ids
+    )
     result = build_plot_set(
         bundles,
         title="Equipment loading",
@@ -762,16 +804,20 @@ def build_equipment_loading_figures(
     )
     figures = list(result.figures)
     for figure, panel in zip(figures, result.panels):
-        points = [
-            (float(x), float(y), curve)
-            for bundle in panel
-            for curve in bundle.curves
-            for x, y in zip(curve.x_values, curve.y_values)
-            if x is not None and y is not None and math.isfinite(float(x)) and math.isfinite(float(y))
-        ]
-        if not points:
+        peak: tuple[float, float, Curve] | None = None
+        for bundle in panel:
+            for curve in bundle.curves:
+                for x, y in zip(curve.x_values, curve.y_values):
+                    if x is None or y is None:
+                        continue
+                    x_value, y_value = float(x), float(y)
+                    if not math.isfinite(x_value) or not math.isfinite(y_value):
+                        continue
+                    if peak is None or y_value > peak[1]:
+                        peak = (x_value, y_value, curve)
+        if peak is None:
             continue
-        x_value, y_value, curve = max(points, key=lambda point: point[1])
+        x_value, y_value, curve = peak
         figure.add_annotation(
             x=x_value,
             y=y_value,

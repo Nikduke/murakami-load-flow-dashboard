@@ -116,8 +116,6 @@ def discover_wtg_objects(cases: list[CaseData] | tuple[CaseData, ...]) -> list[s
              or _has_pair(case, object_name, "active_power", "voltage"))
     }
     return sorted(names, key=lambda name: name.casefold())
-
-
 def discover_loading_objects(cases: list[CaseData] | tuple[CaseData, ...]) -> list[str]:
     names = {
         object_name
@@ -146,11 +144,3 @@ def discover_power_factor_objects(cases: list[CaseData] | tuple[CaseData, ...]) 
         if resolve_channel(case, object_name, "power_factor").status == "found"
     }
     return sorted(names, key=lambda name: name.casefold())
-
-
-def collect_resolution_issue(case: CaseData, object_name: str, role: str) -> str:
-    resolution = resolve_channel(case, object_name, role)
-    if resolution.status == "found":
-        return ""
-    return resolution.message
-

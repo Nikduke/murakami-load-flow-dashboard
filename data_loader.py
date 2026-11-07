@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from hashlib import sha256
 from io import BytesIO, StringIO
+import math
 from pathlib import Path, PurePosixPath
 import re
 from typing import Iterable
@@ -25,8 +26,6 @@ class InputFile:
     source_path: str
     content: bytes
     origin: str = "local"
-    archive_name: str = ""
-    member_path: str = ""
 
     @cached_property
     def digest(self) -> str:
@@ -48,11 +47,9 @@ class CaseData:
     filename: str
     tokens: tuple[str, ...]
     source_path: str
-    source_kind: str
     sha256: str
     sweep_index: tuple[float | None, ...]
     channels: tuple[Channel, ...]
-    validation_provenance: tuple[str, ...]
 
     @cached_property
     def _channels_by_object(self) -> dict[str, tuple[Channel, ...]]:
@@ -141,7 +138,7 @@ def expand_inputs(files: Iterable[InputFile]) -> ExpandedInputs:
         if suffix != ".zip":
             continue
 
-        archive_label = source.archive_name or source.name
+        archive_label = source.name
         try:
             with ZipFile(BytesIO(source.content)) as archive:
                 members = archive.infolist()
@@ -186,8 +183,6 @@ def expand_inputs(files: Iterable[InputFile]) -> ExpandedInputs:
                             source_path=f"{archive_label}!/{member_path}",
                             content=archive.read(member),
                             origin=source.origin,
-                            archive_name=archive_label,
-                            member_path=member_path,
                         )
                     )
         except (BadZipFile, LargeZipFile, OSError, RuntimeError, NotImplementedError, EOFError, ValueError) as exc:
@@ -208,9 +203,10 @@ def _number(value: str) -> float | None:
     if not text:
         return None
     try:
-        return float(text)
+        number = float(text)
     except ValueError:
         return None
+    return number if math.isfinite(number) else None
 
 
 def _unit_from_description(description: str) -> str:
@@ -366,11 +362,9 @@ def parse_csv_case(source: InputFile) -> tuple[CaseData | None, tuple[Validation
         filename=filename,
         tokens=tokens,
         source_path=source.source_path,
-        source_kind=source.origin,
         sha256=source.digest,
         sweep_index=tuple(sweep_index),
         channels=tuple(channels),
-        validation_provenance=(source.source_path, f"sha256:{source.digest}"),
     )
     return case, tuple(issues)
 
