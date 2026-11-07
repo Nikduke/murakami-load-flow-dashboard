@@ -2,7 +2,7 @@
 
 ## Input schema
 
-Each CSV contains one calculation case. Row 1 gives the PowerFactory object name/path; row 2 gives the exact variable description and unit. The first cells are normally `Results` and `Index`. Numeric samples start on row 3. The first column is retained as the sweep index. Standard CSV quoting and UTF-8 with or without a BOM are supported; empty cells and non-numeric values remain unavailable points.
+Each CSV contains one calculation case. Row 1 gives the PowerFactory object name/path; row 2 gives the exact variable description and unit. The first cells are normally `Results` and `Index`. Numeric samples start on row 3. The first column is retained as the sweep index. Standard CSV quoting and UTF-8 with or without a BOM are supported; empty, non-numeric and non-finite values remain unavailable points.
 
 A channel is identified within a case by its object name, exact metric description and original zero-based CSV column position. Channels are matched across cases by semantic object and description rather than column order. Duplicate role channels and unit conflicts are reported as ambiguous. Rows with mismatched data width are padded or truncated with a warning so other valid cases remain usable.
 

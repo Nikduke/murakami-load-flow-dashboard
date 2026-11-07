@@ -1,8 +1,12 @@
 # User guide
 
+## Start the dashboard
+
+Run `app_run.bat` from `LF_dash_app\Murakami\01_App`. This launches the Load-Flow `app.py` with the environment in that same folder. It is separate from the similarly named launchers in the Voltage Envelopes and Harmonics projects. Streamlit uses port 8501 when it is free and chooses another port when it is occupied; use the URL printed in the launcher window.
+
 ## Load results
 
-Use the always-visible uploader at the top of the sidebar, below the MPE wordmark, to add CSV files, ZIP archives or mapping workbooks. Loose files in `Input_files/` are loaded automatically. ZIP contents are read in memory and uploads stay in the current browser session. Archives can contain up to 250 entries and expand to at most 100 MiB. Remove an upload from the uploader when it is no longer needed.
+Use the always-visible uploader at the top of the sidebar, below the MPE wordmark, to add CSV files, ZIP archives or mapping workbooks. Loose files in `Input_files/` are loaded automatically. ZIP contents are read in memory and uploads stay in the current browser session. Each archive can contain up to 250 entries and expand to at most 100 MiB. Remove an upload from the uploader when it is no longer needed.
 
 One mapping workbook is applied automatically. If more than one mapping workbook is available, choose which one to use. Mapping workbooks only rename the case-token filters.
 
