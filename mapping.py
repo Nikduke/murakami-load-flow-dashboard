@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 
 from openpyxl import load_workbook
@@ -15,6 +15,68 @@ from validation import ValidationIssue
 class MappingResult:
     headers: dict[int, str]
     issues: tuple[ValidationIssue, ...]
+    grouping: dict[str, str] = field(default_factory=dict)
+    descriptions: dict[str, str] = field(default_factory=dict)
+
+
+def _read_string_pairs(
+    workbook,
+    sheet_name: str,
+    key_label: str,
+    value_label: str,
+    source_path: str,
+    issues: list[ValidationIssue],
+    issue_prefix: str,
+) -> dict[str, str]:
+    if sheet_name not in workbook.sheetnames:
+        return {}
+
+    rows = list(workbook[sheet_name].iter_rows(values_only=True))
+    columns = [str(value).strip().casefold() if value is not None else "" for value in rows[0]] if rows else []
+    keys = [index for index, name in enumerate(columns) if name == key_label.casefold()]
+    values = [index for index, name in enumerate(columns) if name == value_label.casefold()]
+    if len(keys) != 1 or len(values) != 1 or sum(bool(name) for name in columns) != 2:
+        issues.append(
+            ValidationIssue(
+                "error",
+                f"mapping_{issue_prefix}_columns",
+                f"`{sheet_name}` must contain exactly the `{key_label}` and `{value_label}` columns, once each.",
+                source_path,
+            )
+        )
+        return {}
+
+    result: dict[str, str] = {}
+    for row_number, row in enumerate(rows[1:], start=2):
+        if max(keys[0], values[0]) >= len(row):
+            continue
+        raw_key, raw_value = row[keys[0]], row[values[0]]
+        if raw_key is None and raw_value is None:
+            continue
+        key = str(raw_key).strip() if raw_key is not None else ""
+        value = str(raw_value).strip() if raw_value is not None else ""
+        if not key or not value:
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    f"mapping_{issue_prefix}_empty",
+                    f"Row {row_number}: `{key_label}` and `{value_label}` must both be non-empty.",
+                    source_path,
+                )
+            )
+            continue
+        if key in result and result[key] != value:
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    f"mapping_{issue_prefix}_duplicate_{key_label.casefold()}",
+                    f"Row {row_number}: `{key}` has conflicting `{value_label}` values.",
+                    source_path,
+                )
+            )
+            continue
+        result[key] = value
+    return result
 
 
 def load_mapping(source: InputFile) -> MappingResult:
@@ -109,7 +171,14 @@ def load_mapping(source: InputFile) -> MappingResult:
                 )
                 continue
             result[token_position] = heading
-        return MappingResult(result, tuple(issues))
+        grouping = _read_string_pairs(
+            workbook, "Grouping", "HEADER", "Group", source.source_path, issues, "group"
+        )
+        descriptions = _read_string_pairs(
+            workbook, "Description", "ID", "Description", source.source_path, issues, "description"
+        )
+
+        return MappingResult(result, tuple(issues), grouping, descriptions)
     finally:
         workbook.close()
 

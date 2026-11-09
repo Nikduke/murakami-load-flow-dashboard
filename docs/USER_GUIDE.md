@@ -8,17 +8,19 @@ Run `app_run.bat` from `LF_dash_app\Murakami\01_App`. This launches the Load-Flo
 
 Use the always-visible uploader at the top of the sidebar, below the MPE wordmark, to add CSV files, ZIP archives or mapping workbooks. Loose files in `Input_files/` are loaded automatically. ZIP contents are read in memory and uploads stay in the current browser session. Each archive can contain up to 250 entries and expand to at most 100 MiB. Remove an upload from the uploader when it is no longer needed.
 
-One mapping workbook is applied automatically. If more than one mapping workbook is available, choose which one to use. Mapping workbooks only rename the case-token filters.
+One mapping workbook is applied automatically. If more than one mapping workbook is available, choose which one to use. Its `Headers` sheet names the sidebar filename-token filters. An optional `Grouping` sheet adds group tabs to **Equipment Loading** and **Power Factor**; each group tab shows only its mapped channel chips, while **All cases** shows every available channel. These tabs retain the filename-case selection from the sidebar. See [Mapping workbook](MAPPING.md) for the sheet format.
 
 ## Select cases and equipment
 
 The first available value in each cascading case-token selector is selected when a new result set loads, so the first valid case combination is shown initially. Use the checkboxes in the sidebar to change it. **Select all** and **Clear all** apply to one token; **All cases** selects every available value. Later token options follow earlier selections.
 
-Choose equipment from the visible chips above each chart. Light-green chips are unselected; light-amber chips are selected. A plain click selects that item alone; **Ctrl-click** adds or removes it from a multi-selection. Each tab starts with its first equipment chip selected. Chart-specific controls follow the chips, with each label inline before its input. **Plot layout** and its buttons sit at the far right of the settings row.
+Choose equipment from the visible chips above each chart. Light-green chips are unselected; light-amber chips are selected. A plain click selects that item alone; **Ctrl-click** adds or removes it from a multi-selection. Each tab starts with its first equipment chip selected. When a mapping has groups, **Equipment Loading** and **Power Factor** show group tabs below the chart tab row, followed by **All cases**. Each group keeps its own first-chip default and selection. Chart-specific controls follow the chips, with each label inline before its input. **Plot layout** and its buttons sit at the far right of the settings row.
 
 ## Read the charts
 
 Each chart tab has a compact layout selector. The default **1 plot** view shows one panel; **1×2** shows two panels in one column and two rows; **2×2** shows four panels in two columns and two rows. Panels are balanced automatically.
+
+When a mapping workbook includes a `Description` sheet, one **Case option descriptions** table appears immediately below the plots and before the violation table. Each case-filter heading is shown once in bold; its option names are bold and their descriptions are listed alongside. Only options in the loaded cases are shown.
 
 - **WTG P–Q**: exported Q against P; Qmin/Qmax boundaries can be toggled.
 - **WTG Terminal Voltage**: voltage against active power. The minimum and maximum reference lines start at 0.92 and 1.08 p.u. and can be edited.

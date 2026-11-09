@@ -19,7 +19,7 @@ from channel_catalogue import (
     resolve_channel,
 )
 import data_loader
-from data_loader import InputFile, expand_inputs, parse_cases
+from data_loader import CaseData, InputFile, expand_inputs, parse_cases
 from limit_analysis import (
     equipment_loading_limit_violations,
     wtg_pq_limit_violations,
@@ -27,12 +27,15 @@ from limit_analysis import (
 )
 from mapping import load_mapping, token_heading
 from plotting import (
+    Curve,
+    CurveBundle,
     PlotOptions,
     build_equipment_loading_figures,
     build_poc_pq_figures,
     build_power_factor_figures,
     build_wtg_pq_figures,
     build_wtg_voltage_figures,
+    build_plot_set,
     bundle_ranges,
     distribute_bundles,
     _legend_column_layout,
@@ -148,13 +151,27 @@ def test_input_digest_is_computed_once_per_immutable_source(monkeypatch):
     assert calls == 1
 
 
-def _mapping_bytes(rows: list[tuple[object, object]]) -> bytes:
+def _mapping_bytes(
+    rows: list[tuple[object, object]],
+    grouping_rows: list[tuple[object, object]] | None = None,
+    description_rows: list[tuple[object, object]] | None = None,
+) -> bytes:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Headers"
     sheet.append(["Token N", "Header"])
     for row in rows:
         sheet.append(list(row))
+    if grouping_rows is not None:
+        grouping = workbook.create_sheet("Grouping")
+        grouping.append(["HEADER", "Group"])
+        for row in grouping_rows:
+            grouping.append(list(row))
+    if description_rows is not None:
+        descriptions = workbook.create_sheet("Description")
+        descriptions.append(["ID", "Description"])
+        for row in description_rows:
+            descriptions.append(list(row))
     output = BytesIO()
     workbook.save(output)
     workbook.close()
@@ -281,6 +298,104 @@ def test_mapping_changes_headings_only_and_reports_invalid_rows():
     assert token_heading(2, result.headers) == "Case parameter 2"
     assert token_heading(7, result.headers) == "Case parameter 7"
     assert any(issue.code == "mapping_position" for issue in result.issues)
+
+
+def test_mapping_v2_reads_groups_and_rejects_conflicting_header_assignments():
+    source = InputFile(
+        "Mapping_V2.xlsx",
+        "Mapping_V2.xlsx",
+        _mapping_bytes(
+            [(1, "Study configuration")],
+            [
+                ("Exp_Cable_1", "Export Cables "),
+                ("Main TR_1", "Transformers"),
+                ("Exp_Cable_1", "Export Cables"),
+                ("Exp_Cable_2", "Export Cables"),
+                ("Main TR_1", "Other group"),
+            ],
+        ),
+        "test",
+    )
+    result = load_mapping(source)
+
+    assert result.headers == {1: "Study configuration"}
+    assert result.grouping == {
+        "Exp_Cable_1": "Export Cables",
+        "Main TR_1": "Transformers",
+        "Exp_Cable_2": "Export Cables",
+    }
+    assert any(issue.code == "mapping_group_duplicate_header" for issue in result.issues)
+
+
+def test_mapping_reads_case_option_descriptions_and_reports_conflicts():
+    result = load_mapping(
+        InputFile(
+            "Mapping_V2.xlsx",
+            "Mapping_V2.xlsx",
+            _mapping_bytes(
+                [(1, "Study")],
+                description_rows=[
+                    ("Qmin ", " 0.95 Power Factor - Lead "),
+                    ("Q0", "Unity Power Factor"),
+                    ("Qmin", "Conflicting description"),
+                ],
+            ),
+            "test",
+        )
+    )
+
+    assert result.descriptions == {
+        "Qmin": "0.95 Power Factor - Lead",
+        "Q0": "Unity Power Factor",
+    }
+    assert any(issue.code == "mapping_description_duplicate_id" for issue in result.issues)
+
+
+def test_mapping_v2_example_workbook_has_valid_grouping_when_available():
+    path = Path(__file__).resolve().parents[2] / "Example_export" / "02" / "Mapping_V2.xlsx"
+    if not path.is_file():
+        pytest.skip("Mapping_V2 example workbook is not available in this checkout.")
+
+    result = load_mapping(InputFile(path.name, str(path), path.read_bytes(), "test"))
+
+    assert len(result.headers) == 5
+    assert result.headers == {
+        1: "Study configuration",
+        2: "Initial voltage",
+        3: "System configuration",
+        4: "Reactive-power condition",
+        5: "Tolerances",
+    }
+    assert result.grouping["A1"] == "Transition Joint Bay Cables"
+    assert result.grouping["Main TR_1"] == "Transformers"
+    assert result.grouping["Exp_Cable_1"] == "Export Cables"
+    assert result.descriptions["Q099"] == "0.99 Power Factor - Lag"
+    assert result.descriptions["noHTRT"] == "Original WTG Capability Curve (Without Thermal Limits)"
+    assert result.issues == ()
+
+
+def test_cleaned_example_case_options_match_description_ids_when_available():
+    path = Path(__file__).resolve().parents[2] / "Example_export" / "03" / "cleaned.zip"
+    if not path.is_file():
+        pytest.skip("Cleaned Murakami example ZIP is not available in this checkout.")
+
+    expanded = expand_inputs([InputFile(path.name, str(path), path.read_bytes(), "test")])
+    cases = parse_cases(expanded.csv_files).cases
+    assert len(expanded.mapping_files) == 1
+    mapping = load_mapping(expanded.mapping_files[0])
+    options = {value for position in range(5) for value in token_values(cases, position)}
+
+    assert options
+    assert options <= mapping.descriptions.keys()
+    assert mapping.issues == ()
+
+
+def test_mapping_filename_patterns_include_v2_names():
+    assert data_loader.is_mapping_filename("Mapping.xlsx")
+    assert data_loader.is_mapping_filename("mapping_V2.xlsx")
+    assert data_loader.is_mapping_filename("Mapping_Client_2026.XLSX")
+    assert not data_loader.is_mapping_filename("Mapping.xlsx.bak")
+    assert not data_loader.is_mapping_filename("My_Mapping.xlsx")
 
 
 def test_mapping_duplicate_position_and_missing_sheet_are_actionable():
@@ -737,6 +852,53 @@ def test_case_legend_column_count_uses_longest_label_and_panel_width():
     assert _legend_column_layout(long_label, 72, 1, panel_width=1800)[0] == 4
     assert _legend_column_layout(long_label, 72, 4, panel_width=750)[0] == 2
     assert _legend_column_layout(long_label, 72, 4, panel_width=620)[0] == 1
+
+
+def test_split_legend_space_tracks_each_display_row():
+    bundles = []
+    for index in range(16):
+        case = CaseData(
+            case_id=f"case-{index:02}",
+            filename=f"case-{index:02}.csv",
+            tokens=(
+                f"Case {index:02}",
+                f"Long option description {index:02}" if index in {0, 1, 4, 5} else "S",
+            ),
+            source_path=f"case-{index:02}.csv",
+            sha256="",
+            sweep_index=(0.0, 1.0),
+            channels=(),
+        )
+        curve = Curve(
+            case=case,
+            case_label=case.filename,
+            element_name="WTG 1",
+            series_name="operating curve",
+            x_metric_description="x",
+            metric_description="y",
+            x_label="X",
+            x_unit="",
+            y_label="Y",
+            y_unit="",
+            x_transform="",
+            y_transform="",
+            x_values=(0.0, 1.0),
+            y_values=(0.0, 1.0),
+            raw_x_values=(0.0, 1.0),
+            raw_y_values=(0.0, 1.0),
+        )
+        bundles.append(CurveBundle("WTG 1", case, (curve,)))
+
+    result = build_plot_set(
+        bundles,
+        title="WTG P–Q",
+        x_title="X",
+        y_title="Y",
+        options=PlotOptions(layout="2×2"),
+    )
+
+    assert [figure.layout.margin.b for figure in result.figures] == [158, 158, 122, 122]
+    assert [figure.layout.height for figure in result.figures] == [498, 498, 462, 462]
 
 
 def test_real_case_labels_use_four_columns_full_width_and_two_in_2x2(murakami_cases):

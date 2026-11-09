@@ -5,8 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
+import re
 from typing import Callable, Sequence
 
+import pandas as pd
 import streamlit as st
 
 from case_filters import case_labels, filter_cases, token_values, varying_token_positions
@@ -53,7 +55,7 @@ APP_LOGO_PATH = APP_DIR / "assets" / "mpe_app_wordmark.png"
 TAB_NAMES = ("WTG P–Q", "WTG Terminal Voltage", "Equipment Loading", "POC P–Q", "Power Factor")
 LAYOUTS = ("1 plot", "1×2", "2×2")
 CASE_FILTER_DEFAULTS_VERSION = 2
-PLOT_CACHE_VERSION = 23
+PLOT_CACHE_VERSION = 24
 VIOLATION_CACHE_VERSION = 1
 _PLOT_WIDTH_SENSOR = st.components.v2.component(
     "murakami_plot_width_sensor",
@@ -113,6 +115,7 @@ class ParsedSources:
     parsed: ParseResult
     mapping_files: tuple[InputFile, ...]
     issues: tuple[ValidationIssue, ...]
+    header_issues: tuple[ValidationIssue, ...]
     csv_count: int
 
 
@@ -142,10 +145,12 @@ def _cached_upload_inputs(
 def _cached_parse(signature: tuple[tuple[str, str, str], ...], _files: tuple[InputFile, ...]) -> ParsedSources:
     del signature
     expanded = expand_inputs(_files)
+    parsed = parse_cases(expanded.csv_files)
     return ParsedSources(
-        parsed=parse_cases(expanded.csv_files),
+        parsed=parsed,
         mapping_files=expanded.mapping_files,
         issues=expanded.issues,
+        header_issues=_header_variation_issues(parsed.cases),
         csv_count=len(expanded.csv_files),
     )
 
@@ -301,6 +306,18 @@ def _initial_selection(key: str, label: str, options: Sequence[str], defaults: S
     return equipment_pills(label, available, defaults, key=key)
 
 
+def _grouped_source_options(
+    options: Sequence[str], grouping: dict[str, str]
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    grouped: dict[str, list[str]] = {group: [] for group in dict.fromkeys(grouping.values())}
+    for option in options:
+        group = grouping.get(option)
+        if group in grouped:
+            grouped[group].append(option)
+    groups = tuple((group, tuple(members)) for group, members in grouped.items() if members)
+    return (*groups, ("All cases", tuple(options))) if groups else ()
+
+
 def _set_case_filter_values(key: str, values: tuple[str, ...], selected: bool) -> None:
     st.session_state["case_filters_all"] = False
     for value in values:
@@ -452,18 +469,18 @@ def _plot_cache_signature(
     )
 
 
-def _plot_width_key(tab_id: str, layout: str) -> str:
-    layout_key = layout.replace(" ", "_").replace("×", "x")
-    return f"{tab_id}_plot_width_{layout_key}"
+def _plot_width_key(layout: str) -> str:
+    columns_per_row = 2 if layout == "2×2" else 1
+    return f"plot_panel_width_{columns_per_row}_column"
 
 
-def _plot_panel_width(tab_id: str, layout: str) -> int | None:
-    width = st.session_state.get(_plot_width_key(tab_id, layout), {}).get("width")
+def _plot_panel_width(layout: str) -> int | None:
+    width = st.session_state.get(_plot_width_key(layout), {}).get("width")
     return int(width) if width else None
 
 
-def _measure_plot_panel(tab_id: str, layout: str) -> None:
-    key = _plot_width_key(tab_id, layout)
+def _measure_plot_panel(layout: str) -> None:
+    key = _plot_width_key(layout)
     width = st.session_state.get(key, {}).get("width", 0)
     _PLOT_WIDTH_SENSOR(
         key=key,
@@ -558,6 +575,7 @@ def _render_plotset(
     violation_rows: Sequence[dict[str, str | int | float]] | None = None,
     violation_empty_message: str = "",
     violation_table_key: str | None = None,
+    case_option_rows: Sequence[dict[str, str]] = (),
 ) -> None:
     if not cases:
         st.info("No cases match the current filters. Select more values or click All cases in the sidebar.")
@@ -580,13 +598,26 @@ def _render_plotset(
             for column, figure_index in zip(cols, range(start, start + len(row_figures))):
                 with column:
                     if figure_index == 0:
-                        _measure_plot_panel(tab_id, layout)
+                        _measure_plot_panel(layout)
                     st.plotly_chart(
                         figures[figure_index],
                         key=f"{tab_id}_figure_{figure_index}",
                         width="stretch",
                         config={"displayModeBar": "hover", "responsive": True, "scrollZoom": True},
                     )
+
+    if case_option_rows:
+        st.subheader("Case option descriptions")
+        case_options = pd.DataFrame(case_option_rows)
+        styles = pd.DataFrame("", index=case_options.index, columns=case_options.columns)
+        styles["Option"] = "font-weight: bold"
+        styles.loc[case_options["Case filter"].ne(""), "Case filter"] = "font-weight: bold"
+        st.dataframe(
+            case_options.style.apply(lambda _: styles, axis=None),
+            hide_index=True,
+            width="stretch",
+            height=min(40 + 34 * len(case_options), 560),
+        )
 
     if violation_heading is not None:
         _render_violation_table(
@@ -604,14 +635,37 @@ def _render_plotset(
         key=f"{tab_id}_download",
         on_click="ignore",
     )
+def _case_option_description_rows(
+    cases: Sequence[CaseData],
+    headers: dict[int, str],
+    descriptions: dict[str, str],
+) -> tuple[dict[str, str], ...]:
+    if not descriptions:
+        return ()
+    token_count = max((len(case.tokens) for case in cases), default=0)
+    rows: list[dict[str, str]] = []
+    for position in range(token_count):
+        heading = token_heading(position + 1, headers)
+        for option_index, option in enumerate(token_values(cases, position)):
+            rows.append(
+                {
+                    "Case filter": heading if option_index == 0 else "",
+                    "Option": option,
+                    "Description": descriptions.get(option, "—"),
+                }
+            )
+    return tuple(rows)
 
 
 def _render_tabs(
     cases: Sequence[CaseData],
     catalogue: ObjectCatalogue,
     label_cases: Sequence[CaseData],
+    mapping: MappingResult | None = None,
 ) -> tuple[ValidationIssue, ...]:
     issues: list[ValidationIssue] = []
+    mapping = mapping or MappingResult({}, ())
+    case_option_rows = _case_option_description_rows(label_cases, mapping.headers, mapping.descriptions)
     tabs = st.tabs(TAB_NAMES, on_change="rerun", key="plot_tabs")
     active_index = next((index for index, tab in enumerate(tabs) if tab.open), 0)
 
@@ -630,6 +684,26 @@ def _render_tabs(
             defaults = source_options[:1]
         else:
             tab_id, source_options, source_key, label = "power_factor", catalogue.power_factor, "pf_objects", "Power-factor channels"
+            defaults = source_options[:1]
+
+        layout_tab_id = tab_id
+        group_views = (
+            _grouped_source_options(source_options, mapping.grouping)
+            if active_index in (2, 4) and mapping.grouping
+            else ()
+        )
+        if group_views:
+            group_labels = [group for group, _ in group_views]
+            group_tabs_key = f"{tab_id}_groups"
+            if st.session_state.get(group_tabs_key) not in group_labels:
+                st.session_state.pop(group_tabs_key, None)
+            group_tabs = st.tabs(group_labels, on_change="rerun", key=group_tabs_key)
+            group_index = next((index for index, tab in enumerate(group_tabs) if tab.open), 0)
+            group_name, source_options = group_views[group_index]
+            group_slug = re.sub(r"[^\w-]+", "_", group_name.casefold()).strip("_")
+            group_token = f"{group_slug}_{sha256(group_name.encode('utf-8')).hexdigest()[:6]}"
+            source_key = f"{source_key}_group_{group_token}"
+            tab_id = f"{tab_id}_group_{group_token}"
             defaults = source_options[:1]
 
         selected = _initial_selection(source_key, label, source_options, defaults)
@@ -731,12 +805,12 @@ def _render_tabs(
                         label_visibility="collapsed",
                     )
         with layout_col.container(horizontal_alignment="right", vertical_alignment="center"):
-            layout = _plot_layout_control(tab_id)
+            layout = _plot_layout_control(layout_tab_id)
 
         if active_index == 1 and low >= high:
             st.warning("Min voltage must be lower than max voltage.")
 
-        options = PlotOptions(layout=layout, panel_width=_plot_panel_width(tab_id, layout))
+        options = PlotOptions(layout=layout, panel_width=_plot_panel_width(layout))
 
         labels = _case_label_map(label_cases)
         violation_heading = None
@@ -849,6 +923,7 @@ def _render_tabs(
             violation_rows=violation_rows,
             violation_empty_message=violation_empty_message,
             violation_table_key=violation_table_key,
+            case_option_rows=case_option_rows,
         )
 
     return tuple(issues)
@@ -953,14 +1028,14 @@ def main() -> None:
         st.info("Upload a CSV or ZIP in the sidebar to display plots.")
         plot_issues = ()
     else:
-        plot_issues = _render_tabs(selected_cases, catalogue, parsed.cases)
+        plot_issues = _render_tabs(selected_cases, catalogue, parsed.cases, mapping_result)
 
     all_issues = [
         *loaded.issues,
         *parsed.issues,
         *mapping_selection_issues,
         *mapping_result.issues,
-        *_header_variation_issues(parsed.cases),
+        *loaded.header_issues,
         *plot_issues,
     ]
     grouped_issues = _group_validation_issues(all_issues)

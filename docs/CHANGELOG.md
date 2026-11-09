@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-09
+
+- Read the optional `Grouping` sheet in `Mapping.xlsx` / `Mapping_*.xlsx` workbooks and add mapped group tabs plus **All cases** to Equipment Loading and Power Factor. Group tabs restrict their channel chips and traces to matching headers; the global filename-case filters remain in effect.
+- Read the optional `Description` sheet and show loaded options in one table below the plots, with filter headings shown once and option names emphasized.
+- Size Plotly legend margins to the deepest legend in each displayed chart row, reducing reserved whitespace beneath shorter stacked charts.
+- Share measured plot width by panel geometry across chart and group tabs, and cache header-variation issues with parsed sources to avoid repeated work on reruns.
+
 ## 2026-11-07
 
 - Cached violation summaries, avoided retaining expanded CSV byte copies, separated mapping workbook changes from CSV parsing, and made plot-range and peak scans single-pass.

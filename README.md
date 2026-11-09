@@ -21,10 +21,10 @@ From this folder, double-click `app_run.bat`, or start the app from PowerShell:
 
 ## Add results
 
-- Place loose `.csv` files, `.zip` archives, or `Mapping.xlsx` / `Mapping_*.xlsx` under `Input_files/`. Subfolders are scanned recursively.
+- Place loose `.csv` files, `.zip` archives, or `Mapping.xlsx` / `Mapping_*.xlsx` under `Input_files/`. Mapping workbooks can name filename-token filters and optionally group equipment headers for Equipment Loading and Power Factor. Subfolders are scanned recursively.
 - Or upload one or more CSV, ZIP, and mapping files with the always-visible uploader at the top of the sidebar, below the MPE wordmark. Browser uploads remain in the current session and are not written to disk; remove them from the uploader when finished.
 - ZIP files are read in memory. The current safeguards allow up to 250 archive entries and 100 MiB uncompressed content per archive.
-- A single mapping workbook is applied automatically. Choose a workbook only when several are available. Mapping files name the case filters; case values are discovered from filenames.
+- A single mapping workbook is applied automatically. Choose a workbook only when several are available. Case-filter values are discovered from filenames; optional groups match equipment headers from the CSVs. A single option-description table appears below each chart and before its violation table when the workbook includes a `Description` sheet.
 
 The app reads source files locally and does not send project data to a service. `.gitignore` excludes input files, uploads, secrets and generated exports. Keep proprietary PowerFactory files outside the repository.
 

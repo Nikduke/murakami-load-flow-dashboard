@@ -1,4 +1,5 @@
 import csv
+from hashlib import sha256
 import json
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -354,6 +355,285 @@ def test_multiple_mapping_workbooks_apply_the_explicitly_selected_headers():
         assert not app.exception
         assert any("Network case" in item.value for item in app.markdown)
         assert any("Initial voltage" in item.value for item in app.markdown)
+
+
+def test_mapping_groups_filter_equipment_and_power_factor_chips(monkeypatch):
+    import app as application
+
+    build_calls = 0
+    build_loading = application.build_equipment_loading_figures
+
+    def counted_build(*args, **kwargs):
+        nonlocal build_calls
+        build_calls += 1
+        return build_loading(*args, **kwargs)
+
+    monkeypatch.setattr(application, "build_equipment_loading_figures", counted_build)
+
+    rows = list(csv.reader(StringIO(_uploaded_chart_csv().decode("utf-8"))))
+    rows[0].extend(["Unmapped Device", "Unmapped Device"])
+    rows[1].extend(["Loading in %", "Power Factor"])
+    rows[2].extend(["70", "0.98"])
+    rows[3].extend(["75", "0.99"])
+    content = StringIO(newline="")
+    csv.writer(content).writerows(rows)
+
+    workbook = Workbook()
+    headers = workbook.active
+    headers.title = "Headers"
+    headers.append(["Token N", "Header"])
+    headers.append([1, "Study"])
+    headers.append([2, "Initial voltage"])
+    grouping = workbook.create_sheet("Grouping")
+    grouping.append(["HEADER", "Group"])
+    grouping.append(["Exp_Cable_1", "Export Cables "])
+    grouping.append(["Main TR_1", "Transformers"])
+    grouping.append(["Exp_Cable_2", "Export Cables"])
+    mapping_bytes = BytesIO()
+    workbook.save(mapping_bytes)
+    workbook.close()
+
+    archive = BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("StudyA__V1.csv", content.getvalue())
+        zip_file.writestr("Mapping_V2.xlsx", mapping_bytes.getvalue())
+
+    script = _app_test_script().replace(
+        "app._PLOT_WIDTH_SENSOR = lambda **kwargs: None",
+        "def app_test_width_sensor(**kwargs):\n"
+        "    st.session_state.setdefault('_plot_width_keys', []).append(kwargs['key'])\n"
+        "    st.session_state.setdefault(kwargs['key'], {'width': 1200})\n"
+        "app._PLOT_WIDTH_SENSOR = app_test_width_sensor",
+    )
+    app = AppTest.from_string(script, default_timeout=45).run()
+    app.sidebar.file_uploader[0].set_value(("Study.zip", archive.getvalue(), "application/zip")).run()
+    assert not app.exception
+    assert [tab.label for tab in app.tabs] == [
+        "WTG P–Q",
+        "WTG Terminal Voltage",
+        "Equipment Loading",
+        "POC P–Q",
+        "Power Factor",
+    ]
+
+    def plotted_objects():
+        figure = json.loads(app.get("plotly_chart")[0].proto.spec)
+        return {trace["meta"][1] for trace in figure["data"]}
+
+    app.session_state["plot_tabs"] = "Equipment Loading"
+    app.run()
+    assert not app.exception
+    assert build_calls == 1
+    width_key = "plot_panel_width_1_column"
+    assert app.session_state[width_key] == {"width": 1200}
+    app.session_state["plot_tabs"] = "Equipment Loading"
+    app.session_state["equipment_loading_groups"] = "Export Cables"
+    app.run()
+    assert build_calls == 1
+    app.session_state["plot_tabs"] = "Equipment Loading"
+    app.session_state["equipment_loading_groups"] = "Export Cables"
+    app.run()
+    assert build_calls == 1
+    assert {tab.label for tab in app.tabs} >= {"Export Cables", "Transformers", "All cases"}
+    export_key = f"export_cables_{sha256(b'Export Cables').hexdigest()[:6]}"
+    transformer_key = f"transformers_{sha256(b'Transformers').hexdigest()[:6]}"
+    all_key = f"all_cases_{sha256(b'All cases').hexdigest()[:6]}"
+    assert app.session_state[f"loading_objects_group_{export_key}_options"] == ["Exp_Cable_1"]
+    assert app.session_state[f"loading_objects_group_{export_key}"] == ["Exp_Cable_1"]
+    assert plotted_objects() == {"Exp_Cable_1"}
+    assert "1 of 1 cases selected" in [item.value for item in app.caption]
+
+    app.session_state["plot_tabs"] = "Equipment Loading"
+    app.session_state["equipment_loading_groups"] = "Transformers"
+    app.run()
+    assert not app.exception
+    assert build_calls == 2
+    assert app.session_state[f"loading_objects_group_{transformer_key}_options"] == ["Main TR_1"]
+    assert app.session_state[f"loading_objects_group_{transformer_key}"] == ["Main TR_1"]
+    assert plotted_objects() == {"Main TR_1"}
+    app.session_state["plot_tabs"] = "Equipment Loading"
+    app.session_state["equipment_loading_groups"] = "Transformers"
+    app.run()
+    assert build_calls == 2
+    assert {
+        key for key in app.session_state["_plot_width_keys"] if key.startswith("plot_panel_width")
+    } == {width_key}
+
+    app.session_state["plot_tabs"] = "Equipment Loading"
+    app.session_state["equipment_loading_groups"] = "All cases"
+    app.run()
+    assert not app.exception
+    assert app.session_state[f"loading_objects_group_{all_key}_options"] == [
+        "Exp_Cable_1",
+        "Main TR_1",
+        "Unmapped Device",
+    ]
+    assert app.session_state[f"loading_objects_group_{all_key}"] == ["Exp_Cable_1"]
+    assert plotted_objects() == {"Exp_Cable_1"}
+    app.session_state["plot_tabs"] = "Equipment Loading"
+    app.session_state["equipment_loading_groups"] = "All cases"
+    app.session_state[f"loading_objects_group_{all_key}"] = [
+        "Exp_Cable_1",
+        "Main TR_1",
+        "Unmapped Device",
+    ]
+    app.run()
+    assert plotted_objects() == {"Exp_Cable_1", "Main TR_1", "Unmapped Device"}
+
+    app.session_state["plot_tabs"] = "Equipment Loading"
+    app.session_state["equipment_loading_groups"] = "Export Cables"
+    app.run()
+    assert app.session_state[f"loading_objects_group_{export_key}"] == ["Exp_Cable_1"]
+    assert plotted_objects() == {"Exp_Cable_1"}
+    app.session_state["plot_tabs"] = "Equipment Loading"
+    app.session_state["equipment_loading_groups"] = "All cases"
+    app.run()
+    assert app.session_state[f"loading_objects_group_{all_key}"] == [
+        "Exp_Cable_1",
+        "Main TR_1",
+        "Unmapped Device",
+    ]
+    assert plotted_objects() == {"Exp_Cable_1", "Main TR_1", "Unmapped Device"}
+
+    app.session_state["plot_tabs"] = "Power Factor"
+    app.run()
+    assert not app.exception
+    assert app.session_state[f"pf_objects_group_{export_key}_options"] == [
+        "Exp_Cable_1",
+        "Exp_Cable_2",
+    ]
+    assert app.session_state[f"pf_objects_group_{export_key}"] == ["Exp_Cable_1"]
+    assert "Transformers" not in {tab.label for tab in app.tabs}
+    assert plotted_objects() == {"Exp_Cable_1"}
+
+    app.session_state["plot_tabs"] = "Power Factor"
+    app.session_state["power_factor_groups"] = "All cases"
+    app.run()
+    assert not app.exception
+    assert app.session_state[f"pf_objects_group_{all_key}_options"] == [
+        "Exp_Cable_1",
+        "Exp_Cable_2",
+        "Unmapped Device",
+    ]
+    app.session_state["plot_tabs"] = "Power Factor"
+    app.session_state["power_factor_groups"] = "All cases"
+    app.session_state[f"pf_objects_group_{all_key}"] = [
+        "Exp_Cable_1",
+        "Exp_Cable_2",
+        "Unmapped Device",
+    ]
+    app.run()
+    assert plotted_objects() == {"Exp_Cable_1", "Exp_Cable_2", "Unmapped Device"}
+    assert {
+        key for key in app.session_state["_plot_width_keys"] if key.startswith("plot_panel_width")
+    } == {width_key}
+
+
+def test_plot_width_keys_follow_panel_geometry():
+    from app import _plot_width_key
+
+    assert _plot_width_key("1 plot") == _plot_width_key("1×2")
+    assert _plot_width_key("2×2") != _plot_width_key("1 plot")
+
+
+def test_header_variations_are_computed_once_per_parsed_source_set(monkeypatch):
+    import app as application
+
+    header_issue_calls = 0
+    compute_header_issues = application._header_variation_issues
+
+    def counted_header_issues(cases):
+        nonlocal header_issue_calls
+        if len(cases) > 1:
+            header_issue_calls += 1
+        return compute_header_issues(cases)
+
+    monkeypatch.setattr(application, "_header_variation_issues", counted_header_issues)
+    first_case = list(csv.reader(StringIO(_uploaded_chart_csv().decode("utf-8"))))
+    second_case = [row[:-2] for row in first_case]
+    first_csv = StringIO(newline="")
+    second_csv = StringIO(newline="")
+    csv.writer(first_csv).writerows(first_case)
+    csv.writer(second_csv).writerows(second_case)
+    archive = BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("StudyA__V1.csv", first_csv.getvalue())
+        zip_file.writestr("StudyA__V2.csv", second_csv.getvalue())
+
+    app = AppTest.from_string(_app_test_script(), default_timeout=45).run()
+    app.sidebar.file_uploader[0].set_value(("Study.zip", archive.getvalue(), "application/zip")).run()
+    assert not app.exception
+    assert header_issue_calls == 1
+    app.session_state["plot_tabs"] = "WTG Terminal Voltage"
+    app.run()
+    assert not app.exception
+    assert header_issue_calls == 1
+
+
+def test_case_option_description_table_appears_below_every_chart_section():
+    workbook = Workbook()
+    headers = workbook.active
+    headers.title = "Headers"
+    headers.append(["Token N", "Header"])
+    headers.append([1, "Study configuration"])
+    headers.append([2, "Initial voltage"])
+    descriptions = workbook.create_sheet("Description")
+    descriptions.append(["ID", "Description"])
+    descriptions.append(["StudyA", "Study A description"])
+    descriptions.append(["StudyB", "Study B description"])
+    descriptions.append(["V1", "Version one"])
+    mapping_bytes = BytesIO()
+    workbook.save(mapping_bytes)
+    workbook.close()
+
+    archive = BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("StudyA__V1.csv", _uploaded_violation_csv())
+        zip_file.writestr("StudyB__V1.csv", _uploaded_violation_csv())
+        zip_file.writestr("Mapping_V2.xlsx", mapping_bytes.getvalue())
+
+    app = AppTest.from_string(_app_test_script(), default_timeout=45).run()
+    app.sidebar.file_uploader[0].set_value(("Study.zip", archive.getvalue(), "application/zip")).run()
+    assert not app.exception
+
+    expected_rows = [
+        {"Case filter": "Study configuration", "Option": "StudyA", "Description": "Study A description"},
+        {"Case filter": "", "Option": "StudyB", "Description": "Study B description"},
+        {"Case filter": "Initial voltage", "Option": "V1", "Description": "Version one"},
+    ]
+    chart_sections = (
+        "WTG P–Q",
+        "WTG Terminal Voltage",
+        "Equipment Loading",
+        "POC P–Q",
+        "Power Factor",
+    )
+    for section in chart_sections:
+        app.session_state["plot_tabs"] = section
+        app.run()
+        assert not app.exception
+        tables = [
+            element.value
+            for element in app.dataframe
+            if list(element.value.columns) == ["Case filter", "Option", "Description"]
+        ]
+        assert len(tables) == 1
+        assert [dict(row) for row in tables[0].to_dict(orient="records")] == expected_rows
+        section_headers = [element.value for element in app.subheader]
+        assert "Case option descriptions" in section_headers
+        dataframe_columns = [list(element.value.columns) for element in app.dataframe]
+        if section in {"WTG P–Q", "WTG Terminal Voltage", "Equipment Loading"}:
+            violation_table_index = next(
+                index
+                for index, columns in enumerate(dataframe_columns)
+                if "Case" in columns and any(column.startswith("Excess") for column in columns)
+            )
+            description_table_index = dataframe_columns.index(
+                ["Case filter", "Option", "Description"]
+            )
+            assert description_table_index < violation_table_index
+            violation_header = next(header for header in section_headers if header.endswith("limit violations"))
+            assert section_headers.index("Case option descriptions") < section_headers.index(violation_header)
 
 
 def test_single_mapping_workbook_is_used_without_a_picker(monkeypatch):

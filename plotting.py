@@ -576,25 +576,32 @@ def build_plot_set(
     shared_x, shared_y = bundle_ranges(flat_bundles, [value for value, _ in reference_y])
     base_height = 700 if panel_count == 1 else 520 if panel_count == 2 else 450
     panel_legend_data = [_legend_case_labels(panel) for panel in panels]
-    max_panel_case_count = max((len(labels) for labels, _ in panel_legend_data), default=0)
-    longest_case_label = max(
-        (label for labels, _ in panel_legend_data for label in labels.values()),
-        key=len,
-        default="",
-    )
-    legend_column_capacity, legend_entry_width = _legend_column_layout(
-        longest_case_label, max_panel_case_count, panel_count, options.panel_width
-    )
-    max_legend_rows = math.ceil(max_panel_case_count / legend_column_capacity) if max_panel_case_count else 0
+    columns_per_row = 2 if panel_count == 4 else 1
+    panel_legend_layouts = []
+    row_legend_rows: dict[int, int] = {}
+    for panel_index, (labels, _) in enumerate(panel_legend_data):
+        longest_label = max(labels.values(), key=len, default="")
+        column_capacity, entry_width = _legend_column_layout(
+            longest_label, len(labels), panel_count, options.panel_width
+        )
+        legend_rows = math.ceil(len(labels) / column_capacity) if labels else 0
+        panel_legend_layouts.append((legend_rows, entry_width))
+        display_row = panel_index // columns_per_row
+        row_legend_rows[display_row] = max(row_legend_rows.get(display_row, 0), legend_rows)
     compact_grid_layout = panel_count == 4
-    legend_bottom = max(104 if compact_grid_layout else 110, 86 + 18 * max_legend_rows)
-    height = base_height + legend_bottom - 110
-    plot_area_height = height - 58 - legend_bottom
-    legend_y = -78 / plot_area_height
-    case_options_y = -46 / plot_area_height
     figures: list[go.Figure] = []
 
     for panel_index, panel in enumerate(panels, start=1):
+        _, legend_entry_width = panel_legend_layouts[panel_index - 1]
+        display_row = (panel_index - 1) // columns_per_row
+        legend_bottom = max(
+            104 if compact_grid_layout else 110,
+            86 + 18 * row_legend_rows[display_row],
+        )
+        height = base_height + legend_bottom - 110
+        plot_area_height = height - 58 - legend_bottom
+        legend_y = -78 / plot_area_height
+        case_options_y = -46 / plot_area_height
         figure = go.Figure()
         legend_cases: set[str] = set()
         legend_labels, shared_case_options = panel_legend_data[panel_index - 1]
