@@ -26,7 +26,7 @@ flowchart LR
 - `case_filters.py` supplies natural sorting, left-to-right token filtering and collision-safe case labels.
 - `channel_catalogue.py` resolves exact metric descriptions and discovers WTG, loading, POC and power-factor objects.
 - `plotting.py` builds the five chart families, applies explicit sign transforms, balances whole element×case bundles by plotted-point count, and exports plotted data.
-- `equipment_pills.py` renders text-sized, wrapping equipment chips with single-click selection and Ctrl-click multi-selection.
+- `equipment_pills.py` renders a native **All** action and text-sized, wrapping equipment chips with single-click selection and Ctrl-click multi-selection.
 - `validation.py` defines structured issues shared by the data and mapping layers.
 - `app.py` scans sources, controls session-scoped caches, renders the sidebar upload and global checkbox filters, and shows active-tab controls only after cases load.
 

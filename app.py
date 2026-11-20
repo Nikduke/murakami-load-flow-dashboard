@@ -30,6 +30,7 @@ from data_loader import (
     parse_cases,
 )
 from limit_analysis import (
+    ViolationRow,
     equipment_loading_limit_violations,
     wtg_pq_limit_violations,
     wtg_voltage_limit_violations,
@@ -56,7 +57,7 @@ TAB_NAMES = ("WTG P–Q", "WTG Terminal Voltage", "Equipment Loading", "POC P–
 LAYOUTS = ("1 plot", "1×2", "2×2")
 CASE_FILTER_DEFAULTS_VERSION = 2
 PLOT_CACHE_VERSION = 24
-VIOLATION_CACHE_VERSION = 1
+VIOLATION_CACHE_VERSION = 2
 _PLOT_WIDTH_SENSOR = st.components.v2.component(
     "murakami_plot_width_sensor",
     html='<div id="plot-width-sensor" aria-hidden="true"></div>',
@@ -199,12 +200,12 @@ def _cached_mapping(signature: tuple[str, str, str], _source: InputFile) -> Mapp
 @st.cache_data(show_spinner=False, max_entries=32, scope="session")
 def _cached_violation_rows(
     signature: tuple[object, ...],
-    _builder: Callable[..., Sequence[dict[str, str | int | float]]],
+    _builder: Callable[..., Sequence[ViolationRow]],
     _cases: tuple[CaseData, ...],
     _selected_objects: tuple[str, ...],
     _labels: dict[str, str],
     _parameters: tuple[object, ...],
-) -> tuple[dict[str, str | int | float], ...]:
+) -> tuple[ViolationRow, ...]:
     return tuple(_builder(_cases, _selected_objects, _labels, *_parameters))
 
 
@@ -494,7 +495,7 @@ def _measure_plot_panel(layout: str) -> None:
 
 def _selected_violation_bundle_ids(
     selection_key: str | None,
-    rows: Sequence[dict[str, str | int | float]],
+    rows: Sequence[ViolationRow],
 ) -> frozenset[tuple[str, str]] | None:
     if selection_key is None:
         return None
@@ -511,7 +512,7 @@ def _selected_violation_bundle_ids(
 
 def _violation_table_key(
     tab_id: str,
-    rows: Sequence[dict[str, str | int | float]],
+    rows: Sequence[ViolationRow],
     cases: Sequence[CaseData],
     selected_objects: Sequence[str],
 ) -> str:
@@ -527,12 +528,65 @@ def _violation_table_key(
 def _render_violation_table(
     selection_key: str,
     title: str,
-    rows: Sequence[dict[str, str | int | float]],
+    rows: Sequence[ViolationRow],
     empty_message: str,
 ) -> None:
     st.subheader(title)
     if not rows:
         st.info(empty_message)
+        return
+
+    if "P at 15 MW (MW)" in rows[0]:
+        columns = [
+            ("Violation", "Case"),
+            ("Violation", "WTG"),
+            ("Violation", "Limit"),
+            ("With boost — worst point in sweep", "P (MW)"),
+            ("With boost — worst point in sweep", "Q (Mvar)"),
+            ("With boost — worst point in sweep", "Limit (Mvar)"),
+            ("With boost — worst point in sweep", "Excess (Mvar)"),
+            ("Without boost — 15 MW operating point", "P (MW)"),
+            ("Without boost — 15 MW operating point", "Q (Mvar)"),
+            ("Without boost — 15 MW operating point", "Limit (Mvar)"),
+            ("Without boost — 15 MW operating point", "Excess (Mvar)"),
+        ]
+        row_columns = (
+            "Case",
+            "WTG",
+            "Limit",
+            "P at worst point (MW)",
+            "Q (Mvar)",
+            "Limit (Mvar)",
+            "Excess (Mvar)",
+            "P at 15 MW (MW)",
+            "Q at 15 MW (Mvar)",
+            "Limit at 15 MW (Mvar)",
+            "Excess at 15 MW (Mvar)",
+        )
+        display_rows = [[row[column] for column in row_columns] for row in rows]
+        display_frame = pd.DataFrame(
+            display_rows,
+            columns=pd.MultiIndex.from_tuples(columns),
+        )
+        numeric_columns = columns[3:]
+        formatted_frame = display_frame.style.format(
+            {column: "{:.3f}" for column in numeric_columns},
+            na_rep="—",
+        )
+        st.caption(
+            "With boost shows the worst point in the sweep; without boost is interpolated at 15 MW. "
+            "Dashes under Q, limit and excess mean no breach; P is a dash if 15 MW cannot be evaluated."
+        )
+        st.dataframe(
+            formatted_frame,
+            hide_index=True,
+            width="stretch",
+            height=min(68 + 36 * min(len(rows), 8), 350),
+            key=selection_key,
+            on_select="rerun",
+            selection_mode="multi-row",
+            lazy=False,
+        )
         return
 
     number_formats = {
@@ -572,7 +626,7 @@ def _render_plotset(
     layout: str,
     *,
     violation_heading: str | None = None,
-    violation_rows: Sequence[dict[str, str | int | float]] | None = None,
+    violation_rows: Sequence[ViolationRow] | None = None,
     violation_empty_message: str = "",
     violation_table_key: str | None = None,
     case_option_rows: Sequence[dict[str, str]] = (),

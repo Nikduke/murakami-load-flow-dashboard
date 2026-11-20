@@ -57,11 +57,20 @@ def _app_test_script() -> str:
 import streamlit as st
 import app
 
+def app_test_select_all(selection_key, options):
+    st.session_state[selection_key] = list(options)
+
 def app_test_equipment_pills(label, options, defaults, *, key):
     st.session_state[f"{key}_options"] = list(options)
+    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+        st.button(
+            "All",
+            key=f"{key}_select_all",
+            on_click=app_test_select_all,
+            args=(key, list(options)),
+        )
     selected = [value for value in options if value in st.session_state.get(key, defaults)]
     st.session_state[key] = selected
-    st.caption(f"{label} · click selects one · Ctrl-click adds/removes")
     return selected
 
 app.equipment_pills = app_test_equipment_pills
@@ -104,6 +113,26 @@ def test_uploaded_csv_loads_cases_and_shows_all_five_plot_tabs():
     assert app.segmented_control(key="wtg_pq_layout").value == "1 plot"
 
 
+def test_equipment_selector_all_button_selects_its_available_options():
+    app = AppTest.from_string(
+        """
+import streamlit as st
+import equipment_pills as selector
+selector._PILL_SELECTOR = lambda **kwargs: None
+selected = selector.equipment_pills(
+    "Equipment channels", ["Cable A", "Cable B"], ["Cable A"], key="channels"
+)
+st.write(selected)
+"""
+    ).run()
+    assert not app.exception
+    assert app.session_state["channels"] == ["Cable A"]
+
+    app.button(key="channels_select_all").click().run()
+    assert not app.exception
+    assert app.session_state["channels"] == ["Cable A", "Cable B"]
+
+
 def test_wtg_tabs_show_case_limit_violations_below_the_plots():
     app = AppTest.from_string(_app_test_script(), default_timeout=45).run()
     app.sidebar.file_uploader[0].set_value(
@@ -113,13 +142,16 @@ def test_wtg_tabs_show_case_limit_violations_below_the_plots():
     assert not app.exception
     assert any(item.value == "WTG P–Q limit violations" for item in app.subheader)
     pq_rows = app.dataframe[0].value
-    assert set(pq_rows["Limit"]) == {"Qmin", "Qmax"}
-    assert "Violating points" not in pq_rows.columns
-    assert set(pq_rows["Case"]) == {"StudyA · V1"}
+    assert set(pq_rows[("Violation", "Limit")]) == {"Qmin", "Qmax"}
+    assert set(pq_rows[("Violation", "Case")]) == {"StudyA · V1"}
+    assert pq_rows.columns.nlevels == 2
+    assert ("With boost — worst point in sweep", "P (MW)") in pq_rows.columns
+    assert ("Without boost — 15 MW operating point", "Excess (Mvar)") in pq_rows.columns
+    assert set(pq_rows[("Without boost — 15 MW operating point", "Excess (Mvar)")].isna()) == {True}
 
     app.checkbox(key="pq_show_qmax").set_value(False).run()
     assert not app.exception
-    assert set(app.dataframe[0].value["Limit"]) == {"Qmin", "Qmax"}
+    assert set(app.dataframe[0].value[("Violation", "Limit")]) == {"Qmin", "Qmax"}
 
     app.session_state["plot_tabs"] = "WTG Terminal Voltage"
     app.run()
@@ -156,8 +188,12 @@ def test_violation_table_selection_filters_and_restores_plot_traces():
     app.button(key="all_cases").click().run()
 
     pq_rows = app.dataframe[0].value
-    row_a = next(index for index, row in pq_rows.iterrows() if row["Case"] == "StudyA · V1")
-    row_b = next(index for index, row in pq_rows.iterrows() if row["Case"] == "StudyB · V2")
+    row_a = next(
+        index for index, row in pq_rows.iterrows() if row[("Violation", "Case")] == "StudyA · V1"
+    )
+    row_b = next(
+        index for index, row in pq_rows.iterrows() if row[("Violation", "Case")] == "StudyB · V2"
+    )
     selection_key = app.dataframe[0].key
 
     app.session_state[selection_key] = {"selection": {"rows": [int(row_b)]}}
@@ -198,7 +234,7 @@ def test_violation_selection_clears_when_wtg_scope_changes():
     assert not app.exception
     assert app.dataframe[0].key != first_table_key
     assert app.dataframe[0].value is not None
-    assert app.dataframe[0].value.iloc[0]["WTG"] == "WTG 23"
+    assert app.dataframe[0].value.iloc[0][("Violation", "WTG")] == "WTG 23"
     selection = app.session_state[app.dataframe[0].key]["selection"]["rows"]
     assert selection == []
     figure = json.loads(app.get("plotly_chart")[0].proto.spec)
@@ -214,7 +250,7 @@ def test_violation_selection_clears_when_case_options_change_but_rows_do_not():
     app = AppTest.from_string(_app_test_script(), default_timeout=45).run()
     app.sidebar.file_uploader[0].set_value(("Study.zip", archive.getvalue(), "application/zip")).run()
     assert "1 of 2 cases selected" in [item.value for item in app.caption]
-    assert set(app.dataframe[0].value["Case"]) == {"StudyA · V1"}
+    assert set(app.dataframe[0].value[("Violation", "Case")]) == {"StudyA · V1"}
 
     first_table_key = app.dataframe[0].key
     app.session_state[first_table_key] = {"selection": {"rows": [0]}}
@@ -224,7 +260,7 @@ def test_violation_selection_clears_when_case_options_change_but_rows_do_not():
 
     app.button(key="all_cases").click().run()
     assert app.dataframe[0].key != first_table_key
-    assert set(app.dataframe[0].value["Case"]) == {"StudyA · V1"}
+    assert set(app.dataframe[0].value[("Violation", "Case")]) == {"StudyA · V1"}
     assert app.session_state[app.dataframe[0].key]["selection"]["rows"] == []
     figure = json.loads(app.get("plotly_chart")[0].proto.spec)
     assert {trace["legendgroup"] for trace in figure["data"]} == {"StudyA__V1", "StudyB__V2"}
@@ -470,14 +506,16 @@ def test_mapping_groups_filter_equipment_and_power_factor_chips(monkeypatch):
     ]
     assert app.session_state[f"loading_objects_group_{all_key}"] == ["Exp_Cable_1"]
     assert plotted_objects() == {"Exp_Cable_1"}
+    app.button(key=f"loading_objects_group_{all_key}_select_all").click().run()
     app.session_state["plot_tabs"] = "Equipment Loading"
     app.session_state["equipment_loading_groups"] = "All cases"
-    app.session_state[f"loading_objects_group_{all_key}"] = [
+    app.run()
+    assert not app.exception
+    assert app.session_state[f"loading_objects_group_{all_key}"] == [
         "Exp_Cable_1",
         "Main TR_1",
         "Unmapped Device",
     ]
-    app.run()
     assert plotted_objects() == {"Exp_Cable_1", "Main TR_1", "Unmapped Device"}
 
     app.session_state["plot_tabs"] = "Equipment Loading"
@@ -505,6 +543,13 @@ def test_mapping_groups_filter_equipment_and_power_factor_chips(monkeypatch):
     assert app.session_state[f"pf_objects_group_{export_key}"] == ["Exp_Cable_1"]
     assert "Transformers" not in {tab.label for tab in app.tabs}
     assert plotted_objects() == {"Exp_Cable_1"}
+    app.button(key=f"pf_objects_group_{export_key}_select_all").click().run()
+    app.session_state["plot_tabs"] = "Power Factor"
+    app.session_state["power_factor_groups"] = "Export Cables"
+    app.run()
+    assert not app.exception
+    assert app.session_state[f"pf_objects_group_{export_key}"] == ["Exp_Cable_1", "Exp_Cable_2"]
+    assert plotted_objects() == {"Exp_Cable_1", "Exp_Cable_2"}
 
     app.session_state["plot_tabs"] = "Power Factor"
     app.session_state["power_factor_groups"] = "All cases"
@@ -623,10 +668,19 @@ def test_case_option_description_table_appears_below_every_chart_section():
         assert "Case option descriptions" in section_headers
         dataframe_columns = [list(element.value.columns) for element in app.dataframe]
         if section in {"WTG P–Q", "WTG Terminal Voltage", "Equipment Loading"}:
+            flat_columns = [
+                [
+                    part
+                    for column in columns
+                    for part in (column if isinstance(column, tuple) else (column,))
+                ]
+                for columns in dataframe_columns
+            ]
             violation_table_index = next(
                 index
                 for index, columns in enumerate(dataframe_columns)
-                if "Case" in columns and any(column.startswith("Excess") for column in columns)
+                if "Case" in flat_columns[index]
+                and any(part.startswith("Excess") for part in flat_columns[index])
             )
             description_table_index = dataframe_columns.index(
                 ["Case filter", "Option", "Description"]
@@ -703,7 +757,7 @@ def test_single_mapping_workbook_is_used_without_a_picker(monkeypatch):
             "    st.session_state[f'{key}_options'] = list(options)\n"
             "    selected = [value for value in options if value in st.session_state.get(key, defaults)]\n"
             "    st.session_state[key] = selected\n"
-            "    st.caption(f'{label} · click selects one · Ctrl-click adds/removes')\n"
+            "    st.caption(f'{label}')\n"
             "    return selected\n"
             "app.equipment_pills = app_test_equipment_pills\n"
             "app._PLOT_WIDTH_SENSOR = lambda **kwargs: None\n"
@@ -736,7 +790,7 @@ def test_single_mapping_workbook_is_used_without_a_picker(monkeypatch):
         assert app.session_state["case_filter_1"] == ["V1"]
         assert app.session_state["pq_objects"] == ["WTG 1\\WTG 1"]
         assert app.session_state["pq_objects"] == app.session_state["pq_objects_options"][:1]
-        assert any("Ctrl-click adds/removes" in item.value for item in app.caption)
+        assert not any("click selects one" in item.value for item in app.caption)
         assert not app.multiselect
         assert not any(item.label == "Curve label token positions" for item in app.expander)
         assert not any(item.label == "Axis limits" for item in app.expander)

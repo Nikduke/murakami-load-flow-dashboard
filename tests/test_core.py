@@ -484,11 +484,19 @@ def test_wtg_pq_limit_violations_use_same_sweep_point_and_include_only_breaches(
         "Q (Mvar)": -4.0,
         "Limit (Mvar)": -3.0,
         "Excess (Mvar)": 1.0,
+        "P at 15 MW (MW)": 15.0,
+        "Q at 15 MW (Mvar)": None,
+        "Limit at 15 MW (Mvar)": None,
+        "Excess at 15 MW (Mvar)": None,
     }
     assert by_limit["Qmax"]["P at worst point (MW)"] == 30
     assert by_limit["Qmax"]["Q (Mvar)"] == 5
     assert by_limit["Qmax"]["Limit (Mvar)"] == 4
     assert by_limit["Qmax"]["Excess (Mvar)"] == 1
+    assert by_limit["Qmax"]["P at 15 MW (MW)"] == 15
+    assert by_limit["Qmax"]["Q at 15 MW (Mvar)"] is None
+    assert by_limit["Qmax"]["Limit at 15 MW (Mvar)"] is None
+    assert by_limit["Qmax"]["Excess at 15 MW (Mvar)"] is None
 
     at_limits = {
         "Reactive Power in Mvar": (-3, 2, 4),
@@ -497,6 +505,39 @@ def test_wtg_pq_limit_violations_use_same_sweep_point_and_include_only_breaches(
     }
     equal_case = parse_cases([_input(content=_csv_bytes(value_overrides=at_limits))]).cases[0]
     assert wtg_pq_limit_violations([equal_case], ["WTG 1\\WTG 1"], {}) == []
+
+
+def test_wtg_pq_limit_violations_interpolate_at_15_mw_without_extrapolating():
+    overrides = {
+        "Active Power in MW": (14, 16, 17),
+        "Reactive Power in Mvar": (3.5, 7, 6),
+        "Lower limit of reactive power in Mvar": (-5, -5, -5),
+        "Upper limit of reactive power in Mvar": (3, 5, 6),
+    }
+    case = parse_cases([_input(content=_csv_bytes(value_overrides=overrides))]).cases[0]
+    row = wtg_pq_limit_violations([case], ["WTG 1\\WTG 1"], {})[0]
+
+    assert row["Limit"] == "Qmax"
+    assert row["P at worst point (MW)"] == 16
+    assert row["Excess (Mvar)"] == 2
+    assert row["P at 15 MW (MW)"] == 15
+    assert row["Q at 15 MW (Mvar)"] == pytest.approx(5.25)
+    assert row["Limit at 15 MW (Mvar)"] == pytest.approx(4)
+    assert row["Excess at 15 MW (Mvar)"] == pytest.approx(1.25)
+
+    no_bracket = {
+        "Active Power in MW": (10, 12, 14),
+        "Reactive Power in Mvar": (1, 2, 5),
+        "Upper limit of reactive power in Mvar": (0, 0, 0),
+    }
+    case_without_15_mw = parse_cases([_input(content=_csv_bytes(value_overrides=no_bracket))]).cases[0]
+    row_without_15_mw = wtg_pq_limit_violations(
+        [case_without_15_mw], ["WTG 1\\WTG 1"], {}
+    )[0]
+    assert row_without_15_mw["P at 15 MW (MW)"] is None
+    assert row_without_15_mw["Q at 15 MW (Mvar)"] is None
+    assert row_without_15_mw["Limit at 15 MW (Mvar)"] is None
+    assert row_without_15_mw["Excess at 15 MW (Mvar)"] is None
 
 
 def test_wtg_voltage_limit_violations_use_manual_limits_and_exclude_equality():

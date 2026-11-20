@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-18
+
+- Placed the native **All** button first on each equipment-chip line and removed the selector instruction caption. It selects every channel available in that chart or group tab; a plain chip click still selects one channel.
+- Added a grouped WTG P–Q comparison between the worst point in the boost-enabled sweep and the interpolated 15 MW operating point without boost. Dashes mark a 15 MW point with no breach.
+
 ## 2026-11-09
 
 - Read the optional `Grouping` sheet in `Mapping.xlsx` / `Mapping_*.xlsx` workbooks and add mapped group tabs plus **All cases** to Equipment Loading and Power Factor. Group tabs restrict their channel chips and traces to matching headers; the global filename-case filters remain in effect.

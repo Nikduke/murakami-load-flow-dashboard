@@ -92,6 +92,10 @@ def _store_selection(component_key: str, selection_key: str) -> None:
     st.session_state[selection_key] = list(state.get("selected", []))
 
 
+def _select_all(selection_key: str, options: Sequence[str]) -> None:
+    st.session_state[selection_key] = list(options)
+
+
 def equipment_pills(
     label: str,
     options: Sequence[str],
@@ -107,15 +111,22 @@ def equipment_pills(
     current = st.session_state.get(key, list(defaults))
     selected = [option for option in available if option in current]
     st.session_state[key] = selected
-    st.caption(f"{label} · click selects one · Ctrl-click adds/removes")
 
     component_key = f"{key}_selector"
-    _PILL_SELECTOR(
-        key=component_key,
-        data={"label": label, "options": available, "selected": selected},
-        default={"selected": selected},
-        width="stretch",
-        height="content",
-        on_selected_change=lambda: _store_selection(component_key, key),
-    )
+    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+        st.button(
+            "All",
+            key=f"{key}_select_all",
+            width="content",
+            on_click=_select_all,
+            args=(key, available),
+        )
+        _PILL_SELECTOR(
+            key=component_key,
+            data={"label": label, "options": available, "selected": selected},
+            default={"selected": selected},
+            width="stretch",
+            height="content",
+            on_selected_change=lambda: _store_selection(component_key, key),
+        )
     return selected
