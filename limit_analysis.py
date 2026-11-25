@@ -134,7 +134,7 @@ def wtg_pq_limit_violations(
                     normal_power, normal_q, normal_limit = normal_point
                     normal_excess = normal_limit - normal_q if lower else normal_q - normal_limit
                     if normal_excess <= 0:
-                        normal_q = normal_limit = normal_excess = None
+                        normal_excess = None
 
                 rows.append(
                     {
@@ -182,6 +182,23 @@ def wtg_voltage_limit_violations(
                 if result is None:
                     continue
                 active_power, measured_voltage, voltage_limit, excess = result
+                normal_point = _point_at_power(
+                    power.numeric_values,
+                    voltage.numeric_values,
+                    tuple(reference for _ in power.numeric_values),
+                    WTG_NORMAL_POWER_MW,
+                )
+                normal_power: float | None = None
+                normal_voltage: float | None = None
+                normal_limit: float | None = None
+                normal_excess: float | None = None
+                if normal_point is not None:
+                    normal_power, normal_voltage, normal_limit = normal_point
+                    normal_excess = (
+                        normal_limit - normal_voltage if lower else normal_voltage - normal_limit
+                    )
+                    if normal_excess <= 0:
+                        normal_excess = None
                 rows.append(
                     {
                         **_row_prefix(case, object_name, labels),
@@ -190,6 +207,10 @@ def wtg_voltage_limit_violations(
                         "Voltage (p.u.)": measured_voltage,
                         "Limit (p.u.)": voltage_limit,
                         "Excess (p.u.)": excess,
+                        "P at 15 MW (MW)": normal_power,
+                        "Voltage at 15 MW (p.u.)": normal_voltage,
+                        "Limit at 15 MW (p.u.)": normal_limit,
+                        "Excess at 15 MW (p.u.)": normal_excess,
                     }
                 )
     return _sort_rows(rows, "Excess (p.u.)")

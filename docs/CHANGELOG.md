@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-25
+
+- Grouped terminal-voltage criteria under **Voltage Limit** with **Type** and **Limit (p.u.)** columns; removed duplicate limit columns from the boost and 15 MW groups.
+
+## 2026-11-24
+
+- Added the 15 MW comparison to terminal-voltage violation rows, using the current Min/Max voltage references.
+- Kept the measured P–Q or voltage value and its limit visible at 15 MW when there is no breach; **None** now marks the Excess cell.
+- Kept the Excess columns numeric while formatting in-limit cells as **None**, avoiding Arrow serialization errors.
+
 ## 2026-11-18
 
 - Placed the native **All** button first on each equipment-chip line and removed the selector instruction caption. It selects every channel available in that chart or group tab; a plain chip click still selects one channel.

@@ -30,7 +30,7 @@ The app reads source files locally and does not send project data to a service. 
 
 ## Use the dashboard
 
-Each filename-token filter starts with its first available value selected and cascades from left to right in the sidebar. Use **All cases** to select the full set; each token group also has **Select all** and **Clear all** actions. Every equipment chip is visible on its chart tab. Click **All** to select every channel in the active tab; click a chip to select only that channel, or Ctrl-click to add/remove it. Chart-specific settings follow the chips, with the compact layout selector last before the plots. The WTG P–Q violation table compares the worst point in the boost-enabled sweep with the interpolated 15 MW point without boost. The default **1 plot** view shows one panel; **1×2** and **2×2** are also available. See [the user guide](docs/USER_GUIDE.md) for details.
+Each filename-token filter starts with its first available value selected and cascades from left to right in the sidebar. Use **All cases** to select the full set; each token group also has **Select all** and **Clear all** actions. Every equipment chip is visible on its chart tab. Click **All** to select every channel in the active tab; click a chip to select only that channel, or Ctrl-click to add/remove it. Chart-specific settings follow the chips, with the compact layout selector last before the plots. The WTG P–Q and terminal-voltage violation tables compare the worst point in the sweep with the 15 MW operating point without boost. The default **1 plot** view shows one panel; **1×2** and **2×2** are also available. See [the user guide](docs/USER_GUIDE.md) for details.
 
 ## Tests
 

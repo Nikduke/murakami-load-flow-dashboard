@@ -57,7 +57,7 @@ TAB_NAMES = ("WTG P–Q", "WTG Terminal Voltage", "Equipment Loading", "POC P–
 LAYOUTS = ("1 plot", "1×2", "2×2")
 CASE_FILTER_DEFAULTS_VERSION = 2
 PLOT_CACHE_VERSION = 24
-VIOLATION_CACHE_VERSION = 2
+VIOLATION_CACHE_VERSION = 3
 _PLOT_WIDTH_SENSOR = st.components.v2.component(
     "murakami_plot_width_sensor",
     html='<div id="plot-width-sensor" aria-hidden="true"></div>',
@@ -536,46 +536,117 @@ def _render_violation_table(
         st.info(empty_message)
         return
 
-    if "P at 15 MW (MW)" in rows[0]:
-        columns = [
-            ("Violation", "Case"),
-            ("Violation", "WTG"),
-            ("Violation", "Limit"),
-            ("With boost — worst point in sweep", "P (MW)"),
-            ("With boost — worst point in sweep", "Q (Mvar)"),
-            ("With boost — worst point in sweep", "Limit (Mvar)"),
-            ("With boost — worst point in sweep", "Excess (Mvar)"),
-            ("Without boost — 15 MW operating point", "P (MW)"),
-            ("Without boost — 15 MW operating point", "Q (Mvar)"),
-            ("Without boost — 15 MW operating point", "Limit (Mvar)"),
-            ("Without boost — 15 MW operating point", "Excess (Mvar)"),
-        ]
-        row_columns = (
-            "Case",
-            "WTG",
-            "Limit",
-            "P at worst point (MW)",
-            "Q (Mvar)",
+    comparison = {
+        "Q (Mvar)": (
             "Limit (Mvar)",
-            "Excess (Mvar)",
-            "P at 15 MW (MW)",
             "Q at 15 MW (Mvar)",
             "Limit at 15 MW (Mvar)",
             "Excess at 15 MW (Mvar)",
+            "Mvar",
+        ),
+        "Voltage (p.u.)": (
+            "Limit (p.u.)",
+            "Voltage at 15 MW (p.u.)",
+            "Limit at 15 MW (p.u.)",
+            "Excess at 15 MW (p.u.)",
+            "p.u.",
+        ),
+    }
+    measured_column = next((column for column in comparison if column in rows[0]), None)
+    if "P at 15 MW (MW)" in rows[0] and measured_column is not None:
+        worst_limit_column, normal_value_column, normal_limit_column, normal_excess_column, unit = (
+            comparison[measured_column]
         )
+        voltage_comparison = measured_column == "Voltage (p.u.)"
+        if voltage_comparison:
+            columns = [
+                ("Violation", "Case"),
+                ("Violation", "WTG"),
+                ("Voltage Limit", "Type"),
+                ("Voltage Limit", "Limit (p.u.)"),
+                ("With boost — worst point in sweep", "P (MW)"),
+                ("With boost — worst point in sweep", measured_column),
+                ("With boost — worst point in sweep", f"Excess ({unit})"),
+                ("Without boost — 15 MW operating point", "P (MW)"),
+                ("Without boost — 15 MW operating point", measured_column),
+                ("Without boost — 15 MW operating point", f"Excess ({unit})"),
+            ]
+            row_columns = (
+                "Case",
+                "WTG",
+                "Limit",
+                worst_limit_column,
+                "P at worst point (MW)",
+                measured_column,
+                f"Excess ({unit})",
+                "P at 15 MW (MW)",
+                normal_value_column,
+                normal_excess_column,
+            )
+            numeric_columns = [
+                column
+                for column in columns
+                if column
+                not in {
+                    ("Violation", "Case"),
+                    ("Violation", "WTG"),
+                    ("Voltage Limit", "Type"),
+                }
+            ]
+        else:
+            columns = [
+                ("Violation", "Case"),
+                ("Violation", "WTG"),
+                ("Violation", "Limit"),
+                ("With boost — worst point in sweep", "P (MW)"),
+                ("With boost — worst point in sweep", measured_column),
+                ("With boost — worst point in sweep", worst_limit_column),
+                ("With boost — worst point in sweep", f"Excess ({unit})"),
+                ("Without boost — 15 MW operating point", "P (MW)"),
+                ("Without boost — 15 MW operating point", measured_column),
+                ("Without boost — 15 MW operating point", worst_limit_column),
+                ("Without boost — 15 MW operating point", f"Excess ({unit})"),
+            ]
+            row_columns = (
+                "Case",
+                "WTG",
+                "Limit",
+                "P at worst point (MW)",
+                measured_column,
+                worst_limit_column,
+                f"Excess ({unit})",
+                "P at 15 MW (MW)",
+                normal_value_column,
+                normal_limit_column,
+                normal_excess_column,
+            )
+            numeric_columns = columns[3:]
         display_rows = [[row[column] for column in row_columns] for row in rows]
         display_frame = pd.DataFrame(
             display_rows,
             columns=pd.MultiIndex.from_tuples(columns),
         )
-        numeric_columns = columns[3:]
+        for column in numeric_columns:
+            display_frame[column] = pd.to_numeric(display_frame[column], errors="coerce")
+        normal_excess_display_column = ("Without boost — 15 MW operating point", f"Excess ({unit})")
+        no_breach_indices = [
+            index
+            for index, row in enumerate(rows)
+            if row["P at 15 MW (MW)"] is not None and row[normal_excess_column] is None
+        ]
         formatted_frame = display_frame.style.format(
             {column: "{:.3f}" for column in numeric_columns},
             na_rep="—",
         )
+        if no_breach_indices:
+            formatted_frame = formatted_frame.format(
+                lambda _value: "None",
+                subset=pd.IndexSlice[no_breach_indices, normal_excess_display_column],
+                na_rep="None",
+            )
         st.caption(
-            "With boost shows the worst point in the sweep; without boost is interpolated at 15 MW. "
-            "Dashes under Q, limit and excess mean no breach; P is a dash if 15 MW cannot be evaluated."
+            "At 15 MW, the measured value and limit remain visible when within limits; "
+            "None in Excess means no breach. Dashes mean no usable 15 MW point."
         )
         st.dataframe(
             formatted_frame,

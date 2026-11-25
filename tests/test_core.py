@@ -485,8 +485,8 @@ def test_wtg_pq_limit_violations_use_same_sweep_point_and_include_only_breaches(
         "Limit (Mvar)": -3.0,
         "Excess (Mvar)": 1.0,
         "P at 15 MW (MW)": 15.0,
-        "Q at 15 MW (Mvar)": None,
-        "Limit at 15 MW (Mvar)": None,
+        "Q at 15 MW (Mvar)": -1.0,
+        "Limit at 15 MW (Mvar)": -2.0,
         "Excess at 15 MW (Mvar)": None,
     }
     assert by_limit["Qmax"]["P at worst point (MW)"] == 30
@@ -494,8 +494,8 @@ def test_wtg_pq_limit_violations_use_same_sweep_point_and_include_only_breaches(
     assert by_limit["Qmax"]["Limit (Mvar)"] == 4
     assert by_limit["Qmax"]["Excess (Mvar)"] == 1
     assert by_limit["Qmax"]["P at 15 MW (MW)"] == 15
-    assert by_limit["Qmax"]["Q at 15 MW (Mvar)"] is None
-    assert by_limit["Qmax"]["Limit at 15 MW (Mvar)"] is None
+    assert by_limit["Qmax"]["Q at 15 MW (Mvar)"] == -1
+    assert by_limit["Qmax"]["Limit at 15 MW (Mvar)"] == 0
     assert by_limit["Qmax"]["Excess at 15 MW (Mvar)"] is None
 
     at_limits = {
@@ -524,6 +524,19 @@ def test_wtg_pq_limit_violations_interpolate_at_15_mw_without_extrapolating():
     assert row["Q at 15 MW (Mvar)"] == pytest.approx(5.25)
     assert row["Limit at 15 MW (Mvar)"] == pytest.approx(4)
     assert row["Excess at 15 MW (Mvar)"] == pytest.approx(1.25)
+
+    exact_sample = {
+        "Active Power in MW": (14, 15, 16),
+        "Reactive Power in Mvar": (6, 4, 3),
+        "Lower limit of reactive power in Mvar": (-5, -5, -5),
+        "Upper limit of reactive power in Mvar": (5, 5, 5),
+    }
+    exact_case = parse_cases([_input(content=_csv_bytes(value_overrides=exact_sample))]).cases[0]
+    exact_row = wtg_pq_limit_violations([exact_case], ["WTG 1\\WTG 1"], {})[0]
+    assert exact_row["P at 15 MW (MW)"] == 15
+    assert exact_row["Q at 15 MW (Mvar)"] == 4
+    assert exact_row["Limit at 15 MW (Mvar)"] == 5
+    assert exact_row["Excess at 15 MW (Mvar)"] is None
 
     no_bracket = {
         "Active Power in MW": (10, 12, 14),
@@ -560,7 +573,39 @@ def test_wtg_voltage_limit_violations_use_manual_limits_and_exclude_equality():
     assert by_limit["Max voltage"]["Voltage (p.u.)"] == 1.09
     assert by_limit["Max voltage"]["Limit (p.u.)"] == 1.08
     assert by_limit["Max voltage"]["Excess (p.u.)"] == pytest.approx(.01)
+    assert by_limit["Min voltage"]["P at 15 MW (MW)"] == 15
+    assert by_limit["Min voltage"]["Voltage at 15 MW (p.u.)"] == pytest.approx(.915)
+    assert by_limit["Min voltage"]["Limit at 15 MW (p.u.)"] == .92
+    assert (
+        by_limit["Min voltage"]["Limit at 15 MW (p.u.)"]
+        == by_limit["Min voltage"]["Limit (p.u.)"]
+    )
+    assert by_limit["Min voltage"]["Excess at 15 MW (p.u.)"] == pytest.approx(.005)
+    assert by_limit["Max voltage"]["P at 15 MW (MW)"] == 15
+    assert by_limit["Max voltage"]["Voltage at 15 MW (p.u.)"] == pytest.approx(.915)
+    assert by_limit["Max voltage"]["Limit at 15 MW (p.u.)"] == 1.08
+    assert (
+        by_limit["Max voltage"]["Limit at 15 MW (p.u.)"]
+        == by_limit["Max voltage"]["Limit (p.u.)"]
+    )
+    assert by_limit["Max voltage"]["Excess at 15 MW (p.u.)"] is None
     assert wtg_voltage_limit_violations([case], ["WTG 1\\WTG 1"], {}, .92, .92) == []
+
+    exact_sample = {
+        "Active Power in MW": (10, 15, 20),
+        "Voltage, Magnitude in p.u.": (.90, 1.00, 1.10),
+    }
+    exact_case = parse_cases([_input(content=_csv_bytes(value_overrides=exact_sample))]).cases[0]
+    exact_rows = wtg_voltage_limit_violations(
+        [exact_case], ["WTG 1\\WTG 1"], {}, .92, 1.08
+    )
+    exact_by_limit = {row["Limit"]: row for row in exact_rows}
+    assert exact_by_limit["Min voltage"]["Voltage at 15 MW (p.u.)"] == 1.0
+    assert exact_by_limit["Min voltage"]["Limit at 15 MW (p.u.)"] == .92
+    assert exact_by_limit["Min voltage"]["Excess at 15 MW (p.u.)"] is None
+    assert exact_by_limit["Max voltage"]["Voltage at 15 MW (p.u.)"] == 1.0
+    assert exact_by_limit["Max voltage"]["Limit at 15 MW (p.u.)"] == 1.08
+    assert exact_by_limit["Max voltage"]["Excess at 15 MW (p.u.)"] is None
 
 
 def test_equipment_loading_violations_use_plot_axis_and_manual_limit():

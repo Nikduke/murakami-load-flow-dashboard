@@ -33,6 +33,15 @@ def _uploaded_violation_csv() -> bytes:
     return content.getvalue().encode("utf-8")
 
 
+def _uploaded_15mw_breach_csv() -> bytes:
+    rows = list(csv.reader(StringIO(_uploaded_violation_csv().decode("utf-8"))))
+    rows[2][2:4] = ["0.6", "1.09"]
+    rows[3][2:4] = ["0.8", "1.12"]
+    content = StringIO(newline="")
+    csv.writer(content).writerows(rows)
+    return content.getvalue().encode("utf-8")
+
+
 def _uploaded_multi_wtg_violation_csv() -> bytes:
     rows = list(csv.reader(StringIO(_uploaded_violation_csv().decode("utf-8"))))
     rows[0].extend([r"WTG 23\WTG 23"] * 5)
@@ -147,7 +156,14 @@ def test_wtg_tabs_show_case_limit_violations_below_the_plots():
     assert pq_rows.columns.nlevels == 2
     assert ("With boost — worst point in sweep", "P (MW)") in pq_rows.columns
     assert ("Without boost — 15 MW operating point", "Excess (Mvar)") in pq_rows.columns
-    assert set(pq_rows[("Without boost — 15 MW operating point", "Excess (Mvar)")].isna()) == {True}
+    assert {
+        round(value, 3)
+        for value in pq_rows[("Without boost — 15 MW operating point", "Q (Mvar)")]
+    } == {0.05}
+    assert set(pq_rows[("Without boost — 15 MW operating point", "Limit (Mvar)")]) == {-0.5, 0.5}
+    pq_normal_excess = pq_rows[("Without boost — 15 MW operating point", "Excess (Mvar)")]
+    assert pq_normal_excess.dtype.kind in "fiu"
+    assert pq_normal_excess.isna().all()
 
     app.checkbox(key="pq_show_qmax").set_value(False).run()
     assert not app.exception
@@ -159,9 +175,24 @@ def test_wtg_tabs_show_case_limit_violations_below_the_plots():
     assert not app.exception
     assert any(item.value == "WTG terminal-voltage limit violations" for item in app.subheader)
     voltage_rows = app.dataframe[0].value
-    assert set(voltage_rows["Limit"]) == {"Min voltage", "Max voltage"}
-    assert "Violating points" not in voltage_rows.columns
-    assert set(voltage_rows["Case"]) == {"StudyA · V1"}
+    assert voltage_rows.columns.nlevels == 2
+    assert set(voltage_rows[("Voltage Limit", "Type")]) == {"Min voltage", "Max voltage"}
+    assert set(voltage_rows[("Voltage Limit", "Limit (p.u.)")]) == {.92, 1.08}
+    assert ("Violation", "Limit") not in voltage_rows.columns
+    assert list(voltage_rows.columns).count(("Voltage Limit", "Limit (p.u.)")) == 1
+    assert ("With boost — worst point in sweep", "Voltage (p.u.)") in voltage_rows.columns
+    assert ("Without boost — 15 MW operating point", "Voltage (p.u.)") in voltage_rows.columns
+    assert ("Voltage Limit", "Limit (p.u.)") in voltage_rows.columns
+    assert ("With boost — worst point in sweep", "Limit (p.u.)") not in voltage_rows.columns
+    assert ("Without boost — 15 MW operating point", "Limit (p.u.)") not in voltage_rows.columns
+    assert set(
+        voltage_rows[("Without boost — 15 MW operating point", "Voltage (p.u.)")]
+    ) == {1.0}
+    voltage_normal_excess = voltage_rows[("Without boost — 15 MW operating point", "Excess (p.u.)")]
+    assert voltage_normal_excess.dtype.kind in "fiu"
+    assert voltage_normal_excess.isna().all()
+    assert "Violating points" not in voltage_rows.columns.get_level_values(1)
+    assert set(voltage_rows[("Violation", "Case")]) == {"StudyA · V1"}
 
     app.session_state["plot_tabs"] = "Equipment Loading"
     app.run()
@@ -175,6 +206,32 @@ def test_wtg_tabs_show_case_limit_violations_below_the_plots():
     assert loading_rows.iloc[0]["Loading (%)"] == 120.0
     assert loading_rows.iloc[0]["Limit (%)"] == 100.0
     assert loading_rows.iloc[0]["Excess (%)"] == 20.0
+
+
+def test_15mw_excess_columns_stay_numeric_when_rows_mix_breaches_and_none():
+    archive = BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("StudyA__V1.csv", _uploaded_violation_csv())
+        zip_file.writestr("StudyB__V1.csv", _uploaded_15mw_breach_csv())
+
+    app = AppTest.from_string(_app_test_script(), default_timeout=45).run()
+    app.sidebar.file_uploader[0].set_value(("Study.zip", archive.getvalue(), "application/zip")).run()
+    app.button(key="all_cases").click().run()
+
+    pq_excess = app.dataframe[0].value[("Without boost — 15 MW operating point", "Excess (Mvar)")]
+    assert pq_excess.dtype.kind in "fiu"
+    assert pq_excess.isna().sum() == 2
+    assert {round(value, 3) for value in pq_excess.dropna()} == {0.2}
+
+    app.session_state["plot_tabs"] = "WTG Terminal Voltage"
+    app.run()
+
+    voltage_excess = app.dataframe[0].value[
+        ("Without boost — 15 MW operating point", "Excess (p.u.)")
+    ]
+    assert voltage_excess.dtype.kind in "fiu"
+    assert voltage_excess.isna().sum() == 2
+    assert {round(value, 3) for value in voltage_excess.dropna()} == {0.025}
 
 
 def test_violation_table_selection_filters_and_restores_plot_traces():
