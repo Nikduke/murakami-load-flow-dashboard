@@ -234,6 +234,16 @@ def test_15mw_excess_columns_stay_numeric_when_rows_mix_breaches_and_none():
     assert {round(value, 3) for value in voltage_excess.dropna()} == {0.025}
 
 
+def test_positive_small_excess_displays_below_rounding_precision():
+    from app import _format_excess_for_display
+
+    assert _format_excess_for_display(0.0001) == "<0.001"
+    assert _format_excess_for_display(0.0007) == "0.001"
+    assert _format_excess_for_display(0.001) == "0.001"
+    assert _format_excess_for_display(0.00001, decimal_places=4) == "<0.0001"
+    assert _format_excess_for_display(0.00007, decimal_places=4) == "0.0001"
+
+
 def test_violation_table_selection_filters_and_restores_plot_traces():
     archive = BytesIO()
     with ZipFile(archive, "w") as zip_file:

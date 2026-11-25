@@ -2,6 +2,7 @@
 
 ## 2026-11-25
 
+- Display small positive excesses as `<0.001` when three-decimal formatting would show `0.000`; keep **None** for no breach.
 - Grouped terminal-voltage criteria under **Voltage Limit** with **Type** and **Limit (p.u.)** columns; removed duplicate limit columns from the boost and 15 MW groups.
 
 ## 2026-11-24

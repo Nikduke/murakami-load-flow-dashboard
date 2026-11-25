@@ -525,6 +525,17 @@ def _violation_table_key(
     return f"{tab_id}_limit_violations_{digest}"
 
 
+def _format_excess_for_display(value: object, decimal_places: int = 3) -> str:
+    if pd.isna(value):
+        return "—"
+    numeric_value = float(value)
+    formatted_value = f"{numeric_value:.{decimal_places}f}"
+    if numeric_value > 0 and formatted_value == f"{0:.{decimal_places}f}":
+        threshold = f"{10 ** -decimal_places:.{decimal_places}f}"
+        return f"<{threshold}"
+    return formatted_value
+
+
 def _render_violation_table(
     selection_key: str,
     title: str,
@@ -634,10 +645,15 @@ def _render_violation_table(
             for index, row in enumerate(rows)
             if row["P at 15 MW (MW)"] is not None and row[normal_excess_column] is None
         ]
-        formatted_frame = display_frame.style.format(
-            {column: "{:.3f}" for column in numeric_columns},
-            na_rep="—",
+        display_formatters = {column: "{:.3f}" for column in numeric_columns}
+        display_formatters.update(
+            {
+                column: _format_excess_for_display
+                for column in numeric_columns
+                if column[1].startswith("Excess (")
+            }
         )
+        formatted_frame = display_frame.style.format(display_formatters, na_rep="—")
         if no_breach_indices:
             formatted_frame = formatted_frame.format(
                 lambda _value: "None",
@@ -673,8 +689,21 @@ def _render_violation_table(
         "Limit (%)": "%.3f",
         "Excess (%)": "%.3f",
     }
+    display_frame = pd.DataFrame(rows)
+    display_formatters = {}
+    for column, format_string in number_formats.items():
+        if column not in display_frame.columns:
+            continue
+        decimal_places = int(format_string.rsplit(".", 1)[1][:-1])
+        if column.startswith("Excess ("):
+            display_formatters[column] = lambda value, places=decimal_places: _format_excess_for_display(
+                value, places
+            )
+        else:
+            display_formatters[column] = f"{{:{format_string[1:]}}}"
+
     st.dataframe(
-        rows,
+        display_frame.style.format(display_formatters, na_rep="—"),
         hide_index=True,
         width="stretch",
         height=min(42 + 36 * min(len(rows), 8), 330),
